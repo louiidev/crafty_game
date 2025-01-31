@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<objects serializationModel="Studio.02.02.00">
+	<object class="AudioFile" id="{29165370-a283-4236-a124-acebf5bc9ea5}">
+		<property name="assetPath">
+			<value>explosion-sound-effect-1-free-on-gamesfxpackscom-241821.mp3</value>
+		</property>
+		<property name="frequencyInKHz">
+			<value>44.0999985</value>
+		</property>
+		<property name="channelCount">
+			<value>2</value>
+		</property>
+		<property name="length">
+			<value>3.1608163265306124</value>
+		</property>
+		<relationship name="masterAssetFolder">
+			<destination>{23b46896-9017-43d9-a35f-7ae12c1250da}</destination>
+		</relationship>
+	</object>
+</objects>

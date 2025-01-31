@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<objects serializationModel="Studio.02.02.00">
+	<object class="AudioFile" id="{1665e337-9f39-4086-a296-a6deebc8f55c}">
+		<property name="assetPath">
+			<value>pistol-hammer-cocking-back-4-39887.mp3</value>
+		</property>
+		<property name="frequencyInKHz">
+			<value>24</value>
+		</property>
+		<property name="channelCount">
+			<value>2</value>
+		</property>
+		<property name="length">
+			<value>1.8959999999999999</value>
+		</property>
+		<relationship name="masterAssetFolder">
+			<destination>{23b46896-9017-43d9-a35f-7ae12c1250da}</destination>
+		</relationship>
+	</object>
+</objects>

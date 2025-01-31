@@ -1,0 +1,1 @@
+./sokol-shdc -i ./src/shader.glsl -l glsl430:metal_macos:hlsl5 -f sokol_odin --output ./src/default_shader.odin

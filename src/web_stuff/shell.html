@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en-us">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"/>
+		<title>Terrafactor</title>
+		<style>
+			body { margin: 0; background-color: black }
+			.game {
+				position: absolute;
+				top: 0px;
+				left: 0px;
+				margin: 0px;
+				border: 0;
+				width: 100%;
+				height: 100%;
+				overflow: hidden;
+				display: block;
+				image-rendering: optimizeSpeed;
+				image-rendering: -moz-crisp-edges;
+				image-rendering: -o-crisp-edges;
+				image-rendering: -webkit-optimize-contrast;
+				image-rendering: optimize-contrast;
+				image-rendering: crisp-edges;
+				image-rendering: pixelated;
+				-ms-interpolation-mode: nearest-neighbor;
+			}
+		</style>
+	</head>
+	<body>
+		<canvas class="game" id="canvas" oncontextmenu="event.preventDefault()"></canvas>
+		<script type='text/javascript'>
+			var Module = {
+				preRun: [],
+				print: (function() {
+					return function(text) {
+						text = Array.prototype.slice.call(arguments).join(' ');
+						console.log(text);
+					};
+				})(),
+				printErr: function(text) {
+					text = Array.prototype.slice.call(arguments).join(' ');
+					console.error(text);
+				},
+			};
+			window.onerror = function() {
+				console.log("onerror: " + event.message);
+			};
+			
+
+			const supportsKeyboardLock = ('keyboard' in navigator) && ('lock' in navigator.keyboard);
+			
+			if (supportsKeyboardLock) {
+			  document.addEventListener('fullscreenchange', async () => {
+			    if (document.fullscreenElement) {
+			      // The magic happens here… 🦄
+			      await navigator.keyboard.lock(['Escape']);
+			      console.log('Keyboard locked.');
+			      return;
+			    }
+			  });
+			}
+			
+			function enter_fullscreen(element) {
+			    if (element.requestFullscreen) {
+			        element.requestFullscreen();
+			    } else if (element.mozRequestFullScreen) { // Firefox
+			        element.mozRequestFullScreen();
+			    } else if (element.webkitRequestFullscreen) { // Chrome, Safari, Edge
+			        element.webkitRequestFullscreen();
+			    } else if (element.msRequestFullscreen) { // IE/Edge
+			        element.msRequestFullscreen();
+			    }
+			}
+			
+			function exit_fullscreen() {
+			    if (document.exitFullscreen) {
+			        document.exitFullscreen();
+			    } else if (document.mozCancelFullScreen) { // Firefox
+			        document.mozCancelFullScreen();
+			    } else if (document.webkitExitFullscreen) { // Chrome, Safari, Edge
+			        document.webkitExitFullscreen();
+			    } else if (document.msExitFullscreen) { // IE/Edge
+			        document.msExitFullscreen();
+			    }
+			}
+			
+			const gameElement = document.getElementById('canvas');
+			document.addEventListener('keydown', (event) => {
+				if (event.key === 'Enter') {
+					if (!document.fullscreenElement) {
+						enter_fullscreen(gameElement);
+					} else {
+						exit_fullscreen();
+					}
+				}
+			})
+
+
+			// this is the posthog leave event. using a beacon so it's more reliable.
+			// this gets yeeted by ad blockers though, so it's kinda meh.
+			// posthog calculates session length based off of the last event in the session though,
+			// so this doesn't really matter, it can use earlier events during the test.
+			//
+			// in fact, it's probably best we don't have this, just send regular pulses when in-game.
+			/*
+			window.addEventListener('unload', function(event) {
+
+				var body = JSON.stringify({
+					// don't worry, this is a public key lol
+					api_key: "phc_dlmL16LEpJMErY97VM23zSPQHKzPe0DmSj5ulXyHilC",
+					event: "$pageleave",
+					distinct_id: window.postHogData.user_id,
+					timestamp: new Date(Date.now()).toISOString(),
+					properties: {
+						$session_id: window.postHogData.session_id,
+					}
+				})
+				
+				navigator.sendBeacon(
+					"https://d1kpvqga4qwk95.cloudfront.net/capture/",
+					body
+				);
+				
+				console.log(body);
+
+			});
+			*/
+			
+		</script>
+		{{{ SCRIPT }}}
+	</body>
+</html>

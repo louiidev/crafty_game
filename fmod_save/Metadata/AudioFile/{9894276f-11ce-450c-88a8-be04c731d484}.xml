@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<objects serializationModel="Studio.02.02.00">
+	<object class="AudioFile" id="{9894276f-11ce-450c-88a8-be04c731d484}">
+		<property name="assetPath">
+			<value>Horses_to_Water.mp3</value>
+		</property>
+		<property name="isStreaming">
+			<value>true</value>
+		</property>
+		<property name="frequencyInKHz">
+			<value>48</value>
+		</property>
+		<property name="channelCount">
+			<value>2</value>
+		</property>
+		<property name="length">
+			<value>219.024</value>
+		</property>
+		<relationship name="masterAssetFolder">
+			<destination>{23b46896-9017-43d9-a35f-7ae12c1250da}</destination>
+		</relationship>
+	</object>
+</objects>

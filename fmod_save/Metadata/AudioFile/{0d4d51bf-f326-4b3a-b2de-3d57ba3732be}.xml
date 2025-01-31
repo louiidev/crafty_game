@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<objects serializationModel="Studio.02.02.00">
+	<object class="AudioFile" id="{0d4d51bf-f326-4b3a-b2de-3d57ba3732be}">
+		<property name="assetPath">
+			<value>Murder On The Bayou.mp3</value>
+		</property>
+		<property name="isStreaming">
+			<value>true</value>
+		</property>
+		<property name="frequencyInKHz">
+			<value>48</value>
+		</property>
+		<property name="channelCount">
+			<value>2</value>
+		</property>
+		<property name="length">
+			<value>128.232</value>
+		</property>
+		<relationship name="masterAssetFolder">
+			<destination>{23b46896-9017-43d9-a35f-7ae12c1250da}</destination>
+		</relationship>
+	</object>
+</objects>
