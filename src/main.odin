@@ -17,6 +17,7 @@ import "core:math"
 import "core:math/ease"
 import "core:math/linalg"
 import "core:math/rand"
+import "core:slice"
 import "core:strings"
 
 import "time"
@@ -31,14 +32,6 @@ RELEASE :: !DEBUG
 DEMO :: #config(DEMO, true)
 
 WEB :: ODIN_ARCH == .wasm32
-
-
-world_chunks_w :: 15
-world_chunks_h :: 15
-chunk_tile_length :: 7
-
-TILES_W :: chunk_tile_length * world_chunks_w
-TILES_H :: chunk_tile_length * world_chunks_h
 
 
 // :config
@@ -58,20 +51,20 @@ pixel_width: f32 : 320
 pixel_height: f32 : 200
 
 
-Tile :: struct {
-	active:        bool,
-	health:        f32,
-	max_health:    f32,
-	grid_position: Vector2Int,
-}
-
 temp_allocator :: proc() -> mem.Allocator {
 	return context.temp_allocator
 }
 
 
+DebugPathfinding :: struct {
+	nodes: map[Vector2Int]bool,
+	start: Vector2Int,
+	end:   Vector2Int,
+}
+
+
 GameRunState :: struct {
-	tiles:                    [TILES_W * TILES_H]Tile,
+	chunks:                   map[Vector2Int]Chunk,
 	particles:                [dynamic]Particle,
 	sprite_particles:         [dynamic]SpriteParticle,
 	popup_text:               [dynamic]PopupText,
@@ -92,6 +85,7 @@ GameRunState :: struct {
 	slowdown_multiplier:      f32,
 	shop_in_transition_time:  f32,
 	shop_out_transition_time: f32,
+	debug_pathfinding:        DebugPathfinding,
 
 
 	// camera shake
@@ -138,9 +132,7 @@ Entity :: struct {
 	current_animation_timer: f32,
 	current_animation_frame: int,
 	scale_x:                 f32,
-	target_position:         union {
-		Vector2,
-	},
+	node_path:               [dynamic]Vector2Int,
 }
 
 
@@ -329,13 +321,32 @@ init :: proc "c" () {
 		ent.active = true
 		ent.id = 1
 		ent.speed = 20
+		ent.position = Vector2{80, 80}
 		append(&game_data.miners, ent)
 	}
 	{
 		ent: Entity
 		ent.active = true
 		ent.id = 2
-		ent.position = Vector2{10, 10}
+		ent.position = Vector2{30, 30}
+		ent.speed = 20
+
+		append(&game_data.miners, ent)
+	}
+
+	{
+		ent: Entity
+		ent.active = true
+		ent.id = 3
+		ent.speed = 20
+		ent.position = Vector2{180, 180}
+		append(&game_data.miners, ent)
+	}
+	{
+		ent: Entity
+		ent.active = true
+		ent.id = 4
+		ent.position = Vector2{50, 50}
 		ent.speed = 20
 
 		append(&game_data.miners, ent)
@@ -348,14 +359,25 @@ init :: proc "c" () {
 	// write save file
 	data, ok := os.read_entire_file("test.data", context.temp_allocator)
 
-	for x := 0; x < TILES_W; x += 1 {
-		for y := 0; y < TILES_H; y += 1 {
-			if !inside_circle({10, 7}, {x, y}, 2) {
-				game_data.tiles[y * TILES_W + x].active =
-					data[y * TILES_W + x] == '1' ? true : false
+
+	create_chunk({0, 0})
+	new_chunk: ^Chunk = &game_data.chunks[{0, 0}]
+	for x: u32 = 0; x < CHUNK_GRID_SIZE_X; x += 1 {
+		for y: u32 = 0; y < CHUNK_GRID_SIZE_Y; y += 1 {
+
+			active := true
+			for ent in game_data.miners {
+				pos := world_pos_to_tile_pos(ent.position)
+				if manhattan_dist(pos, new_chunk.tiles[y * CHUNK_GRID_SIZE_X + x].grid_position) <=
+				   6 {
+					active = false
+				}
 			}
+			new_chunk.tiles[y * CHUNK_GRID_SIZE_X + x].active = active
 		}
 	}
+
+	allocate_tile_bitmasks({0, 0})
 
 }
 
@@ -500,7 +522,7 @@ game_play :: proc() {
 	x := f32(int(inputs.button_down[D]) - int(inputs.button_down[A]))
 	y := f32(int(inputs.button_down[W]) - int(inputs.button_down[S]))
 
-	camera.position += {x, y} * dt * 80
+	camera.position += {x, y} * dt * 130
 
 	draw_frame.camera_xform = translate_mat4(Vector3{-camera.position.x, -camera.position.y, 0})
 	set_ortho_projection(game_data.camera_zoom)
@@ -511,33 +533,57 @@ game_play :: proc() {
 	// @gameplay inputs 
 	if !game_play_paused {
 
+
+		if inputs.mouse_scroll_delta != {} {
+			game_data.camera_zoom = math.clamp(
+				game_data.camera_zoom + inputs.mouse_scroll_delta.y * dt * 16,
+				0.5,
+				2.5,
+			)
+		}
+
+
 		if inputs.mouse_just_pressed[sapp.Mousebutton.RIGHT] {
-			delete(game_data.selected_miner_ids)
-			game_data.selected_miner_ids = make([dynamic]u32)
+			clear(&game_data.selected_miner_ids)
 		}
 
 		if inputs.mouse_down[sapp.Mousebutton.LEFT] && !game_data.selecting {
 			game_data.start_drag = mouse_world_position
 			game_data.selecting = true
-
 		} else if inputs.mouse_just_pressed[sapp.Mousebutton.LEFT] {
 			size: Vector2 = {
 				mouse_world_position.x - game_data.start_drag.x,
 				mouse_world_position.y - game_data.start_drag.y,
 			}
+
+
 			if len(game_data.selected_miner_ids) > 0 && linalg.length(size) <= 10 {
 
+				set_z_layer(.ui)
+
 				for &miner in game_data.miners {
-					miner.target_position = mouse_world_position
+					for selected_id in game_data.selected_miner_ids {
+						if selected_id == miner.id {
+
+							path := find_path(
+								world_pos_to_tile_pos(miner.position),
+								world_pos_to_tile_pos(mouse_world_position),
+							)
+							if path != nil {
+								miner.node_path = slice.clone_to_dynamic(path[:])
+							}
+							delete(path)
+
+							break
+						}
+					}
 				}
+				clear(&game_data.selected_miner_ids)
 			}
 
 
 			if game_data.selecting {
-
-				delete(game_data.selected_miner_ids)
-				game_data.selected_miner_ids = make([dynamic]u32)
-				log(game_data.start_drag, size)
+				clear(&game_data.selected_miner_ids)
 				for miner in game_data.miners {
 					if aabb_contains(game_data.start_drag, size, miner.position) {
 
@@ -564,141 +610,110 @@ game_play :: proc() {
 	}
 
 
-	tile_size: f32 = 16
-	half_tile_size: f32 = tile_size * 0.5
-	tiles_x: f32 = math.ceil(pixel_width / tile_size)
-	tiles_y: f32 = math.ceil(pixel_height / tile_size)
+	half_tile_size: f32 = TILE_SIZE * 0.5
+	tiles_x: f32 = math.ceil(pixel_width / TILE_SIZE)
+	tiles_y: f32 = math.ceil(pixel_height / TILE_SIZE)
 
 
-	{
-		tiles_x: int : 22
-		tiles_y: int : 15
-		tile_bit_masks: [tiles_x * tiles_y]u8
-		neighbour_directions: [8]Vector2Int = {
-			{1, -1},
-			{1, 0},
-			{1, 1},
-			{0, -1},
-			{0, 1},
-			{-1, -1},
-			{-1, 0},
-			{-1, 1},
-		}
-		// Calculate the camera's current offset
-		camera_offset_x := math.floor(camera.position.x / 22)
-		camera_offset_y := math.floor(camera.position.y / 22)
-		offset := f32(tiles_x) * half_tile_size + f32(tiles_y) * half_tile_size
-		// render tiles
-		for x: int = auto_cast camera_offset_x;
-		    x < auto_cast (f32(tiles_x) + camera_offset_x);
-		    x += 1 {
-			for y: int = auto_cast camera_offset_y;
-			    y < auto_cast (f32(tiles_y) + camera_offset_y);
-			    y += 1 {
-				if x < 0 || y < 0 {
-					continue
-				}
-				tile := &game_data.tiles[y * TILES_W + x]
-				// Calculate tile world position
-				tile_pos := Vector3 {
-					auto_cast x * tile_size - f32(tiles_x) * half_tile_size,
-					auto_cast y * tile_size - f32(tiles_y) * half_tile_size,
-					0.0,
-				}
+	neighbour_directions: [8]Vector2Int = {
+		{1, -1},
+		{1, 0},
+		{1, 1},
+		{0, -1},
+		{0, 1},
+		{-1, -1},
+		{-1, 0},
+		{-1, 1},
+	}
 
-				// Offset tile position by camera movement (player position)
-				world_pos := tile_pos
-				xform := translate_mat4(world_pos)
+	view := get_frame_view()
+	view.position -= TILE_SIZE * 2
+	view.size += TILE_SIZE * 4
 
+
+	// @TILES 
+	for key in get_chunks_in_view() {
+		chunk := game_data.chunks[key]
+		for tile in chunk.tiles {
+
+			xform := transform_2d(tile.position)
+
+
+			if !tile.active {
 				color := hex_to_rgb(0x6b4337)
-				if (x + y) % 2 == 0 {
+				if (tile.grid_position.x + tile.grid_position.y) % 2 == 0 {
 					color = hex_to_rgb(0x684236)
 				}
+				set_z_layer(.background)
+				xform := transform_2d(tile.position)
+				draw_quad_center_xform(xform, {TILE_SIZE, TILE_SIZE}, .nil, DEFAULT_UV, color)
+				continue
+			}
+
+			if !aabb_contains(view.position, view.size, tile.position) || tile.bitmask == 255 {
+				continue
+			}
 
 
-				tile_p := world_pos_to_tile_pos(mouse_world_position)
-				if tile_p == (Vector2Int{x, y}) {
-					// log(x, y, tile_p)
-					color *= COLOR_RED
-					if inputs.mouse_just_pressed[sapp.Mousebutton.LEFT] {
-						tile.active = false
-					}
-				}
+			tile_index := get_tile_coords(bitmask_map_value_to_index(tile.bitmask))
+
+			set_z_layer(.background)
 
 
-				if !tile.active {
-					set_z_layer(.background)
-					draw_quad_xform(xform, {tile_size, tile_size}, .nil, DEFAULT_UV, color)
-				} else {
+			set_z_layer(.game_play)
 
-					tile_type :: enum {
-						blank,
-						left,
-						right,
-						top,
-						bottom,
-						full,
-					}
-					type: tile_type
-
-					neighbour_active: [8]bool
+			draw_quad_center_xform(
+				xform,
+				{TILE_SIZE, TILE_SIZE},
+				.tiles,
+				get_frame_uvs(.tiles, tile_index, {16, 16}),
+				COLOR_WHITE,
+			)
 
 
-					for i := 0; i < len(neighbour_active); i += 1 {
-						neighbour_active[i] = is_tile_active(
-							x + neighbour_directions[i].x,
-							y + neighbour_directions[i].y,
-						)
-					}
+			if tile.grid_position == world_pos_to_tile_pos(mouse_world_position) {
+				set_z_layer(.ui)
+				draw_quad_center_xform(
+					xform,
+					{TILE_SIZE, TILE_SIZE},
+					.nil,
+					DEFAULT_UV,
+					{1, 0, 0, 0.3},
+				)
 
-					bitmask := wang_blob_map_number(
-						neighbour_active[0],
-						neighbour_active[1],
-						neighbour_active[2],
-						neighbour_active[3],
-						neighbour_active[4],
-						neighbour_active[5],
-						neighbour_active[6],
-						neighbour_active[7],
+				if inputs.mouse_just_pressed[sapp.Mousebutton.LEFT] {
+					chunk := &game_data.chunks[chunk.chunk_grid_position]
+					chunk.tiles[tile.chunk_grid_position.y * auto_cast CHUNK_GRID_SIZE_X + tile.chunk_grid_position.x].active =
+						false
+
+					// performance, we should just update neighbours	
+					allocate_tile_bitmasks(chunk.chunk_grid_position)
+					log(
+						chunk.tiles[tile.chunk_grid_position.y * auto_cast CHUNK_GRID_SIZE_X + tile.chunk_grid_position.x].active,
 					)
-
-					tile_index := get_tile_coords(bitmask_map_value_to_index(bitmask))
-
-					// tile_bit_masks[y * tiles_x + x] = tile_index
-					if bitmask != 255 {
-						color := COLOR_WHITE
-						if tile_p == (Vector2Int{x, y}) {
-							color *= COLOR_RED
-						}
-
-						set_z_layer(.game_play)
-
-						draw_quad_xform(
-							xform,
-							{tile_size, tile_size},
-							.tiles,
-							get_frame_uvs(.tiles, tile_index, {16, 16}),
-							color,
-						)
-						xform *= transform_2d({2, 5})
-						draw_text_xform(xform, fmt.tprint("", bitmask), 6, {1, 1, 1, 0.1})
-					}
 				}
 			}
+
+
 		}
 	}
 
 
 	{
 		// @miners
-
 		for &miner in game_data.miners {
+			if len(miner.node_path) > 0 {
+				last := len(miner.node_path) - 1
 
-			if miner.target_position != nil {
-				dir: Vector2 = linalg.vector_normalize(
-					miner.target_position.(Vector2) - miner.position,
-				)
-				miner.position += dir * dt * miner.speed
+				target := miner.node_path[last]
+				target_pos := tile_pos_to_world_pos(target)
+				if target_pos - miner.position != 0 &&
+				   !almost_equals_v2(target_pos, miner.position, 0.5) {
+					dir: Vector2 = linalg.vector_normalize(target_pos - miner.position)
+					miner.position += dir * dt * miner.speed
+				} else {
+					pop(&miner.node_path)
+				}
 			}
 
 
@@ -731,7 +746,6 @@ game_play :: proc() {
 			)
 		}
 	}
-
 
 	{
 		for &popup_txt in game_data.popup_text {
@@ -767,6 +781,12 @@ game_play :: proc() {
 			)
 		}
 	}
+	calculate_fps :: proc(dt: f32) -> f32 {
+		if dt > 0 {
+			return 1.0 / dt
+		}
+		return 0.0 // Prevent division by zero
+	}
 
 
 	draw_frame.camera_xform = identity()
@@ -776,6 +796,17 @@ game_play :: proc() {
 	{
 		// Base UI
 		set_ui_projection_alignment(.bottom_left)
+		ticks_before_updating_fps -= 1
+		if ticks_before_updating_fps <= 0 {
+			fps = calculate_fps(dt)
+			ticks_before_updating_fps = 144
+		}
+		draw_text_center_center(
+			transform_2d({100, 50}),
+			fmt.tprintf("FPS %.0f", fps),
+			20,
+			{1, 1, 1, 1},
+		)
 		_, height := get_ui_dimensions()
 		using game_data
 		base_pos_y := 0.9 * height
@@ -819,7 +850,12 @@ game_play :: proc() {
 		cleanup_base_entity(&game_data.explosions)
 		cleanup_base_entity(&game_data.popup_text)
 	}
+
+
 }
+fps: f32 = 0
+ticks_before_updating_fps := 5
+
 
 MAIN_MENU_CLEAR_COLOR: sg.Color : {1, 1, 1, 1}
 
@@ -1025,21 +1061,11 @@ frame :: proc "c" () {
 cleanup :: proc "c" () {
 	context = runtime.default_context()
 
-	data: [len(game_data.tiles)]byte
+	// data: [len(game_data.tiles)]byte
 
 
-	for x := 0; x < TILES_W; x += 1 {
-		for y := 0; y < TILES_H; y += 1 {
-			if !inside_circle({10, 7}, {x, y}, 2) {
-				t := game_data.tiles[y * TILES_W + x]
-				data[y * TILES_W + x] = t.active ? '1' : '0'
-			}
-		}
-	}
-
-
-	// write save file
-	os.write_entire_file("test.data", data[:])
+	// // write save file
+	// os.write_entire_file("test.data", data[:])
 
 
 	sg.shutdown()

@@ -1,5 +1,166 @@
 package main
 
+
+Tile :: struct {
+	active:              bool,
+	health:              f32,
+	max_health:          f32,
+	grid_position:       Vector2Int,
+	chunk_grid_position: Vector2Int,
+	position:            Vector2,
+	bitmask:             u8,
+}
+
+
+TILE_SIZE: f32 : 16
+CHUNK_GRID_SIZE_X: u32 : 30
+CHUNK_GRID_SIZE_Y: u32 : 20
+CHUNK_ACTUAL_SIZE_X: f32 : f32(CHUNK_GRID_SIZE_X) * TILE_SIZE
+CHUNK_ACTUAL_SIZE_Y: f32 : f32(CHUNK_GRID_SIZE_Y) * TILE_SIZE
+Chunk :: struct {
+	top_left_pos:        Vector2,
+	chunk_grid_position: Vector2Int,
+	tiles:               [CHUNK_GRID_SIZE_X * CHUNK_GRID_SIZE_Y]Tile,
+	// index into a tile in the chuck by offset + (y * width + x) e.g tile:= game.tiles[offset + (y * width + x)]
+}
+
+
+div_floor :: proc(a, b: int) -> int {
+	result := a / b
+	if (a < 0 && a % b != 0) {
+		result -= 1
+	}
+	return result
+}
+
+
+get_chunk_keys_in_rect :: proc(rect: AABB) -> [dynamic]Vector2Int {
+	min_chunk_x := div_floor(int(rect.position.x), auto_cast CHUNK_ACTUAL_SIZE_X)
+	min_chunk_y := div_floor(int(rect.position.y), auto_cast CHUNK_ACTUAL_SIZE_Y)
+	max_chunk_x := div_floor(int(rect.position.x + rect.size.x - 1), auto_cast CHUNK_ACTUAL_SIZE_X)
+	max_chunk_y := div_floor(int(rect.position.y + rect.size.y - 1), auto_cast CHUNK_ACTUAL_SIZE_Y)
+	chunks: [dynamic]Vector2Int
+	chunks.allocator = temp_allocator()
+	for y := min_chunk_y; y <= max_chunk_y; y += 1 {
+		for x := min_chunk_x; x <= max_chunk_x; x += 1 {
+			pos: Vector2Int = {x, y}
+			append(&chunks, pos)
+		}
+	}
+
+	return chunks
+}
+
+get_chunk_key :: proc(position: Vector2) -> Vector2Int {
+	return Vector2Int {
+		auto_cast (position.x / CHUNK_ACTUAL_SIZE_X),
+		auto_cast (position.y / CHUNK_ACTUAL_SIZE_Y),
+	}
+}
+
+
+create_chunk :: proc(position: Vector2Int) {
+	chunk: Chunk
+	chunk_offset := Vector2 {
+		f32(position.x) * CHUNK_ACTUAL_SIZE_Y,
+		f32(position.y) * CHUNK_ACTUAL_SIZE_Y,
+	}
+	for x: u32 = 0; x < CHUNK_GRID_SIZE_X; x += 1 {
+		for y: u32 = 0; y < CHUNK_GRID_SIZE_Y; y += 1 {
+			tile: Tile
+			tile.chunk_grid_position = Vector2Int{auto_cast x, auto_cast y}
+			tile.grid_position =
+				Vector2Int{auto_cast x, auto_cast y} +
+				position * Vector2Int{auto_cast CHUNK_GRID_SIZE_X, auto_cast CHUNK_GRID_SIZE_Y}
+			tile.active = true
+			tile.position =
+				Vector2{auto_cast tile.grid_position.x, auto_cast tile.grid_position.y} * TILE_SIZE
+			chunk.tiles[y * CHUNK_GRID_SIZE_X + x] = tile
+		}
+	}
+	chunk.chunk_grid_position = position
+	game_data.chunks[position] = chunk
+
+}
+
+
+get_chunks_keys_and_allocate_new :: proc(view_box: AABB) -> []Vector2Int {
+	chunk_keys := get_chunk_keys_in_rect(view_box)
+
+	did_create_chunk := make(map[Vector2Int]bool, temp_allocator())
+
+	for chunk_grid_pos in chunk_keys {
+		if !(chunk_grid_pos in game_data.chunks) {
+			create_chunk(chunk_grid_pos)
+			did_create_chunk[chunk_grid_pos] = true
+		}
+	}
+
+	for chunk_grid_pos in chunk_keys {
+		if chunk_grid_pos in did_create_chunk {
+			allocate_tile_bitmasks(chunk_grid_pos)
+		}
+	}
+
+
+	return chunk_keys[:]
+
+}
+
+get_chunks_in_view :: proc() -> []Vector2Int {
+	view_box: AABB = get_frame_view()
+
+	return get_chunks_keys_and_allocate_new(view_box)
+}
+
+neighbour_directions: [8]Vector2Int = {
+	{1, -1},
+	{1, 0},
+	{1, 1},
+	{0, -1},
+	{0, 1},
+	{-1, -1},
+	{-1, 0},
+	{-1, 1},
+}
+
+allocate_tile_bitmasks :: proc(chunk_position: Vector2Int) {
+	for x: int = 0; x < auto_cast CHUNK_GRID_SIZE_X; x += 1 {
+		for y: int = 0; y < auto_cast CHUNK_GRID_SIZE_Y; y += 1 {
+			neighbour_active: [8]bool
+
+			for i := 0; i < len(neighbour_active); i += 1 {
+				neighbour_active[i] = is_tile_active(
+					chunk_position,
+					&game_data.chunks,
+					x + neighbour_directions[i].x,
+					y + neighbour_directions[i].y,
+				)
+
+
+			}
+
+			chunk := &game_data.chunks[chunk_position]
+			bitmask := wang_blob_map_number(
+				neighbour_active[0],
+				neighbour_active[1],
+				neighbour_active[2],
+				neighbour_active[3],
+				neighbour_active[4],
+				neighbour_active[5],
+				neighbour_active[6],
+				neighbour_active[7],
+			)
+
+			tile := &chunk.tiles[y * auto_cast CHUNK_GRID_SIZE_X + x]
+			// log(bitmask)
+			tile.bitmask = bitmask
+		}
+	}
+
+}
+
+
 NORTH_WEST :: 1 << 0 // 1
 NORTH :: 1 << 1 // 1
 NORTH_EAST :: 1 << 2 // 4
@@ -195,12 +356,31 @@ bitmask_map_value_to_index :: proc(index: u8) -> int {
 	return 0
 }
 
-
-is_tile_active :: proc(x, y: int) -> bool {
-	if x < 0 || y < 0 || x >= TILES_W || y >= TILES_H {
-		return false
+is_tile_active :: proc(
+	current_chunk: Vector2Int,
+	chunks: ^map[Vector2Int]Chunk,
+	x, y: int,
+) -> bool {
+	x, y := x, y
+	chunk_pos := current_chunk
+	if x < 0 {
+		chunk_pos.x -= 1
+		x = auto_cast CHUNK_GRID_SIZE_X - 1
 	}
-	return game_data.tiles[y * TILES_W + x].active
+	if y < 0 {
+		chunk_pos.y -= 1
+		y = auto_cast CHUNK_GRID_SIZE_Y - 1
+	}
+	if x >= auto_cast CHUNK_GRID_SIZE_X {
+		chunk_pos.x += 1
+		x = 0
+	}
+
+	if y >= auto_cast CHUNK_GRID_SIZE_Y {
+		chunk_pos.y += 1
+		y = 0
+	}
+	return chunks[chunk_pos].tiles[y * auto_cast CHUNK_GRID_SIZE_X + x].active
 }
 
 
@@ -212,14 +392,17 @@ get_tile_coords :: proc(index: int) -> Vector2Int {
 
 import "core:math"
 
-tiles_x: int : 22
-tiles_y: int : 15
-grid_offset := Vector2{auto_cast tiles_x, auto_cast tiles_y} * 0.5
+
 world_pos_to_tile_pos :: proc(world_pos: Vector2) -> Vector2Int {
 	tile_pos := Vector2Int {
-		auto_cast math.floor(world_pos.x / 16.0),
+		auto_cast math.round(world_pos.x / 16.0),
 		auto_cast math.round(world_pos.y / 16.0),
 	}
 
-	return tile_pos + {auto_cast math.round(grid_offset.x), auto_cast math.floor(grid_offset.y)}
+	return tile_pos
+}
+
+
+tile_pos_to_world_pos :: proc(tile_pos: Vector2Int) -> Vector2 {
+	return {f32(tile_pos.x) * 16.0, f32(tile_pos.y) * 16.0}
 }

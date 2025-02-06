@@ -72,11 +72,11 @@ init_fonts :: proc() {
 }
 
 
-add_glyphs_to_atlas :: proc(text: string, font_size: u32) {
+// add_glyphs_to_atlas :: proc(text: string, font_size: u32) {
 
-}
+// }
 
-FontAtlas :: struct {
-	glyph_atlas_info: map[rune]stbtt.bakedchar,
-	font_info:        stbtt.fontinfo,
-}
+// FontAtlas :: struct {
+// 	glyph_atlas_info: map[rune]stbtt.bakedchar,
+// 	font_info:        stbtt.fontinfo,
+// }

@@ -51,7 +51,7 @@ event_cb :: proc "c" (event: ^sapp.Event) {
 	using sapp.Event_Type
 	#partial switch event.type {
 
-	case .MOUSE_DOWN, .MOUSE_UP, .MOUSE_MOVE:
+	case .MOUSE_DOWN, .MOUSE_UP, .MOUSE_MOVE, .MOUSE_SCROLL:
 		if (event.type == .MOUSE_DOWN) {
 			inputs.mouse_down_pos = inputs.mouse_pos
 			inputs.screen_mouse_down_pos = inputs.screen_mouse_pos
@@ -236,6 +236,7 @@ event_cb :: proc "c" (event: ^sapp.Event) {
 
 
 inputs_end_frame :: proc() {
+	inputs.mouse_scroll_delta = {}
 	for i := 0; i < len(inputs.button_just_pressed); i += 1 {
 		inputs.button_just_pressed[i] = false
 	}

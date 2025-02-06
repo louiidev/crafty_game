@@ -72,6 +72,7 @@ DrawFrame :: struct {
 	quads:            [ZLayer][dynamic]Quad,
 	active_z_layer:   ZLayer,
 	shader_extension: sg.Pipeline,
+	cleared_frame:    bool,
 }
 draw_frame: DrawFrame
 
@@ -120,10 +121,13 @@ start_draw_frame :: proc() {
 	}
 }
 
+
 clear_draw_frame :: proc() {
 	for layer in ZLayer {
-		delete(draw_frame.quads[layer])
+		clear(&draw_frame.quads[layer])
 	}
+
+	// mem.zero(raw_data(&actual_quad_data), MAX_QUADS * size_of(Quad) * size_of(u8))
 }
 
 
@@ -289,7 +293,6 @@ draw_quad_xform_in_frame :: proc(
 	world_to_clip := draw_frame.projection * draw_frame.camera_xform * xform
 
 	quad_array := &draw_frame.quads[draw_frame.active_z_layer]
-	quad_array.allocator = temp_allocator()
 	verts: [4]Vertex
 	defer append(quad_array, verts)
 
@@ -324,8 +327,6 @@ import "core:mem"
 
 
 gfx_render_draw_frame :: proc(frame: ^DrawFrame) {
-
-
 	state.bind.images[IMG_tex0] = atlas.sg_image
 	state.bind.images[IMG_tex1] = font_image
 	total_quad_count := 0
@@ -338,9 +339,12 @@ gfx_render_draw_frame :: proc(frame: ^DrawFrame) {
 	if (total_quad_count == 0) {
 		return
 	}
+	// log(total_quad_count)
 	assert(total_quad_count <= MAX_QUADS)
 	for quads_in_layer, layer in draw_frame.quads {
 		size := size_of(Quad) * len(quads_in_layer)
+
+
 		mem.copy(
 			mem.ptr_offset(raw_data(actual_quad_data[:]), offset),
 			raw_data(quads_in_layer),
@@ -349,12 +353,20 @@ gfx_render_draw_frame :: proc(frame: ^DrawFrame) {
 		offset += size
 	}
 
+
 	sg.update_buffer(
 		state.bind.vertex_buffers[0],
 		{ptr = raw_data(actual_quad_data[:]), size = len(actual_quad_data)},
 	)
 
-	sg.begin_pass({action = state.pass_action, swapchain = sglue.swapchain()})
+	action: sg.Pass_Action = {}
+
+	if !frame.cleared_frame {
+		action = state.pass_action
+		// frame.cleared_frame = true
+	}
+
+	sg.begin_pass({action = action, swapchain = sglue.swapchain()})
 	sg.apply_pipeline(state.pip)
 	sg.apply_bindings(state.bind)
 
@@ -379,19 +391,14 @@ gfx_update :: proc() {
 
 draw_frame_reset :: proc(frame: ^DrawFrame) {
 	using runtime, linalg
-	clear_draw_frame()
-	memset(&draw_frame, 0, size_of(draw_frame))
-	frame.shader_extension = default_pipeline
-	start_draw_frame()
+	draw_frame = {}
 
-	frame.projection = matrix_ortho3d_f32(
-		pixel_width * -0.5,
-		pixel_width * 0.5,
-		pixel_height * -0.5,
-		pixel_height * 0.5,
-		-1,
-		1,
-	)
+	clear_draw_frame()
+	frame.cleared_frame = false
+	draw_frame.shader_extension = default_pipeline
+	// start_draw_frame()
+
+	set_ortho_projection(game_data.camera_zoom)
 	frame.camera_xform = Matrix4(1)
 }
 

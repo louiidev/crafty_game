@@ -1,5 +1,6 @@
 package main
 
+import sapp "../vendor/sokol/app"
 import "base:intrinsics"
 import "core:log"
 import "core:math"
@@ -11,6 +12,9 @@ almost_equals :: proc(a, b, epsilon: f32) -> bool {
 	return math.abs(a - b) <= epsilon
 }
 
+almost_equals_v2 :: proc(a, b: Vector2, epsilon: f32) -> bool {
+	return almost_equals(a.x, b.x, epsilon) && almost_equals(a.y, b.y, epsilon)
+}
 
 animate_to_target_f32 :: proc(
 	value: ^f32,
@@ -108,4 +112,25 @@ ease_over_time :: proc(
 import sg "../vendor/sokol/gfx"
 vec_to_color :: proc(color: Vector4) -> sg.Color {
 	return sg.Color{color.r, color.g, color.b, color.a}
+}
+
+
+get_frame_view :: proc() -> AABB {
+	w := get_scaled_width()
+	camera_offset_x := camera.position.x - w * 0.5
+	camera_offset_y := camera.position.y - (pixel_height / game_data.camera_zoom) * 0.5
+
+	return AABB {
+		position = {camera_offset_x, camera_offset_y},
+		size = {w, pixel_height / game_data.camera_zoom},
+	}
+
+}
+
+
+get_scaled_width :: proc() -> f32 {
+	scale := f32(pixel_height) / f32(sapp.height())
+	w := f32(sapp.width()) * scale
+
+	return w / game_data.camera_zoom
 }
