@@ -3,12 +3,13 @@
 //  Texture creation, rendering with texture, packed vertex components.
 //------------------------------------------------------------------------------
 package main
-
+import imgui "../vendor/odin-imgui"
 import sapp "../vendor/sokol/app"
 import sg "../vendor/sokol/gfx"
 import sglue "../vendor/sokol/glue"
 import slog "../vendor/sokol/log"
 import "core:os"
+import "core:strings"
 // import stime "../sokol/time"
 
 import "base:runtime"
@@ -17,8 +18,8 @@ import "core:math"
 import "core:math/ease"
 import "core:math/linalg"
 import "core:math/rand"
+import "core:mem"
 import "core:slice"
-import "core:strings"
 
 import "time"
 
@@ -63,44 +64,64 @@ DebugPathfinding :: struct {
 }
 
 
+MINE_BLOCK_TIMER :: 0.3
+BUILD_BUILDING_TIMER :: 0.3
+STAMINA_TIMER :: 0.1
+STAMINA_REST_TIMER :: 0.3
+
+
+PlayerActionType :: enum {
+	nil,
+	Dig,
+	Cancel,
+}
+
 GameRunState :: struct {
-	chunks:                   map[Vector2Int]Chunk,
-	particles:                [dynamic]Particle,
-	sprite_particles:         [dynamic]SpriteParticle,
-	popup_text:               [dynamic]PopupText,
-	miners:                   [dynamic]Entity,
-	enemy_spawn_timer:        f32,
-	money:                    int,
-	ticks:                    u64,
-	selected_miner_ids:       [dynamic]u32,
-	start_drag:               Vector2,
-	selecting:                bool,
+	chunks:                      map[Vector2Int]Chunk,
+	particles:                   [dynamic]Particle,
+	sprite_particles:            [dynamic]SpriteParticle,
+	popup_text:                  [dynamic]PopupText,
+	miners:                      [dynamic]Entity,
+	world_items:                 [dynamic]WorldItem,
+	build_items:                 map[BuildType]BuildItem,
+	enemy_spawn_timer:           f32,
+	money:                       int,
+	ticks:                       u64,
+	selected_miner_ids:          [dynamic]u32,
+	start_drag:                  Vector2,
+	selecting:                   bool,
+	start_selecting:             bool,
+	selecting_mouse_btn:         sapp.Mousebutton,
+	dropbox:                     TargetBlock,
+	action_type:                 PlayerActionType,
 
 	// timers
-	in_transition_timer:      f32,
-	out_transition_timer:     f32,
-	knockback_radius_timer:   f32,
-	knockback_hold_timer:     f32,
-	timer_to_show_upgrade:    f32,
-	slowdown_multiplier:      f32,
-	shop_in_transition_time:  f32,
-	shop_out_transition_time: f32,
-	debug_pathfinding:        DebugPathfinding,
+	in_transition_timer:         f32,
+	out_transition_timer:        f32,
+	knockback_radius_timer:      f32,
+	knockback_hold_timer:        f32,
+	timer_to_show_upgrade:       f32,
+	slowdown_multiplier:         f32,
+	shop_in_transition_time:     f32,
+	shop_out_transition_time:    f32,
+	// debug_pathfinding:        DebugPathfinding,
+	current_selected_build_type: BuildType,
 
 
 	// camera shake
-	camera_zoom:              f32,
-	shake_amount:             f32,
-	ui_state:                 GameUIState,
-	app_state:                AppState,
-	world_time_elapsed:       f32,
-	explosions:               [dynamic]Explosion,
-	knockback_position:       Vector2,
+	camera_zoom:                 f32,
+	shake_amount:                f32,
+	ui_state:                    GameUIState,
+	app_state:                   AppState,
+	world_time_elapsed:          f32,
+	explosions:                  [dynamic]Explosion,
+	knockback_position:          Vector2,
 	// STATS
-	enemies_killed:           u32,
-	money_earned:             u32,
-	using ux_state:           struct {
+	enemies_killed:              u32,
+	money_earned:                u32,
+	using ux_state:              struct {
 		ux_alpha:      f32,
+		ux_x_offset:   f32,
 		ux_anim_state: enum {
 			fade_in,
 			hold,
@@ -110,29 +131,75 @@ GameRunState :: struct {
 	},
 }
 
+game_data: GameRunState
+
+
+miner_type :: enum {
+	normal,
+	bulk,
+	square,
+	wide,
+}
+
+ent_state :: enum {
+	idle,
+	walking,
+	mining,
+	collecting,
+	sleeping,
+}
+
+
+MinerTask :: enum {
+	nil,
+	return_item,
+	heading_to_rest,
+	build_building,
+	destroy_blocks,
+}
+
 
 log :: fmt.println
 
 last_id: u32 = 0
 Entity :: struct {
-	using _:                 BaseEntity,
-	id:                      u32,
-	velocity:                Vector2,
-	dodge_roll_cooldown:     f32,
-	speed:                   f32,
-	roll_speed:              f32,
-	health:                  f32,
-	max_health:              f32,
-	collision_radius:        f32,
-	knockback_timer:         f32,
-	knockback_direction:     Vector2,
-	knockback_velocity:      Vector2,
-	attack_timer:            f32,
-	stun_timer:              f32,
-	current_animation_timer: f32,
-	current_animation_frame: int,
-	scale_x:                 f32,
-	node_path:               [dynamic]Vector2Int,
+	current_task:               MinerTask,
+	using _:                    BaseEntity,
+	id:                         u32,
+	velocity:                   Vector2,
+	speed:                      f32,
+	roll_speed:                 f32,
+	health:                     f32,
+	max_health:                 f32,
+	collision_radius:           f32,
+	knockback_timer:            f32,
+	knockback_direction:        Vector2,
+	knockback_velocity:         Vector2,
+	attack_timer:               f32,
+	stun_timer:                 f32,
+	current_animation_timer:    f32,
+	current_animation_frame:    int,
+	scale_x:                    f32,
+	node_path:                  [dynamic]Vector2Int,
+	last_face_direction:        Vector2Int,
+	type:                       miner_type,
+	state:                      ent_state,
+	tasks:                      [MinerTask]TaskQueueItem,
+	task_timer:                 f32,
+	mined_resource:             ResourceType,
+	chunk_task_target_position: Vector2Int,
+	stamina:                    f32,
+	stamina_timer:              f32,
+	resting_in_tent:            bool,
+}
+
+
+set_state :: proc(ent: ^Entity, state: ent_state) {
+	if ent.state != state {
+		ent.state = state
+		ent.current_animation_frame = 0
+		ent.current_animation_timer = 0
+	}
 }
 
 
@@ -147,20 +214,12 @@ GameUIState :: enum {
 	nil,
 	pause_menu,
 	upgrade_menu,
-	player_death,
+	build_menu,
 }
 
 
 Camera :: struct {
 	position: Vector2,
-}
-
-
-Bomb :: struct {
-	using _:                 BaseEntity,
-	current_animation_timer: f32,
-	current_animation_frame: int,
-	last_frame_timer:        f32,
 }
 
 
@@ -194,43 +253,14 @@ PLAYER_INITIAL_CRIT_CHANCE: f32 : 7.5
 PLAYER_MAX_CRIT_CHANCE: f32 : 75.5
 PLAYER_WALK_SPEED :: 120
 PLAYER_WALK_SHOOTING_SPEED :: 80 * 0.25
-PLAYER_SPEED_REDUCATION_PER_FRAME: f32 : 70.0
-PLAYER_SPEED_ADDITION_PER_FRAME: f32 : 120.0
-PLAYER_ROLL_SPEED :: 100
-PLAYER_ROLLDOWN_COOLDOWN :: 0.8
-PLAYER_DODGE_ROLL_PWR :: 180
-PLAYER_DODGE_ROLL_TIME :: 0.36
-PLAYER_DEFAULT_ORB_DMG: f32 : 3
-
-PLAYER_INITIAL_poison_DMG: f32 : 1.0
-PLAYER_INITIAL_FREEZE_SLOWDOWN: f32 : 0.75
-INITIAL_EXPLOSIVE_DMG: f32 : 15
-INITIAL_FREEZE_SLOWDOWN: f32 : 0.75
-
-PLAYER_GUN_MOVE_DIST: f32 : 8.0
-
-
-MIN_ENEMIES_PER_SPAWN: int : 4
-MAX_ENEMIES_PER_SPAWN: int : 10
-
-MAX_EVER_ENEMIES_PER_SPAWN: int : 15
-
-WAVE_ENEMY_PER_SPAWN_MODIFIER: int : 1
-WAVE_ENEMY_HEALTH_MODIFIER: f32 : 2.5
 
 
 SPRITE_PIXEL_SIZE :: 16
 
-PLAYER_KNOCKBACK_VELOCITY :: 120
 
-
-REROLL_COST_MODIFIER :: 2
-INITIAL_REROLL_COST :: 1
-
-
-IDLE_ANIMATION_TIME :: 0.6
+IDLE_ANIMATION_TIME :: .6
+WALK_ANIMATION_TIME :: .3
 IDLE_ANIMATION_FRAMES :: 2
-WALK_ANIMATION_TIME :: 0.08
 WALK_ANIMATION_FRAMES :: 6
 ROLLING_ANIMATION_TIME :: 0.08
 ROLLING_ANIMATION_FRAMES :: 4
@@ -238,8 +268,6 @@ ROLLING_ANIMATION_FRAMES :: 4
 PLAYER_I_FRAME_TIMEOUT_AMOUNT :: 0.5
 
 UPGRADE_TIMER_SHOW_TIME :: 0.9
-TIMER_TO_SHOW_DEATH_UI: f32 : 2.0
-TIMER_TO_SHOW_DEATH_ANIMATION: f32 : 1.5
 INITIAL_STUN_TIME :: 0.5
 INITIAL_KILL_AMOUNT :: 30
 WAVE_KILL_MODIFIER: f32 : 1.2
@@ -273,9 +301,6 @@ MONEY_ANIM_FRAMES :: 8
 MONEY_ANIM_TIME_PER_FRAME: f32 : 0.1
 
 
-game_data: GameRunState
-
-
 camera: Camera
 
 
@@ -288,7 +313,6 @@ setup_run :: proc() {
 background_color: Vector4
 clear_color: sg.Color
 
-import "core:mem"
 init :: proc "c" () {
 	context = runtime.default_context()
 	sg.setup(
@@ -307,7 +331,7 @@ init :: proc "c" () {
 	init_sound()
 	setup_run()
 	init_time = time.now()
-
+	imgui_init()
 
 	when (!DEBUG || !TESTING) && !DEV {
 		game_data.app_state = .splash_logo
@@ -320,8 +344,11 @@ init :: proc "c" () {
 		ent: Entity
 		ent.active = true
 		ent.id = 1
-		ent.speed = 20
+		ent.speed = rand.float32_range(16, 26)
 		ent.position = Vector2{80, 80}
+		ent.type = auto_cast rand.int31_max(len(miner_type))
+		ent.stamina = 100
+		setup_tasks(&ent)
 		append(&game_data.miners, ent)
 	}
 	{
@@ -329,7 +356,10 @@ init :: proc "c" () {
 		ent.active = true
 		ent.id = 2
 		ent.position = Vector2{30, 30}
-		ent.speed = 20
+		ent.speed = rand.float32_range(16, 26)
+		ent.type = auto_cast rand.int31_max(len(miner_type))
+		ent.stamina = 100
+		setup_tasks(&ent)
 
 		append(&game_data.miners, ent)
 	}
@@ -338,8 +368,12 @@ init :: proc "c" () {
 		ent: Entity
 		ent.active = true
 		ent.id = 3
-		ent.speed = 20
+		ent.speed = rand.float32_range(16, 26)
 		ent.position = Vector2{180, 180}
+		ent.type = auto_cast rand.int31_max(len(miner_type))
+		ent.stamina = 100
+		setup_tasks(&ent)
+
 		append(&game_data.miners, ent)
 	}
 	{
@@ -347,12 +381,62 @@ init :: proc "c" () {
 		ent.active = true
 		ent.id = 4
 		ent.position = Vector2{50, 50}
-		ent.speed = 20
+		ent.speed = rand.float32_range(16, 26)
+		ent.stamina = 100
+		ent.type = auto_cast rand.int31_max(len(miner_type))
+		setup_tasks(&ent)
 
 		append(&game_data.miners, ent)
 	}
 
 
+	{
+		build: BuildItem
+
+		build.cost = 40
+		build.size = {15, 15}
+		build.sprite_coords = {0, 0}
+		build.unlocked = true
+		build.type = .Tent
+		game_data.build_items[BuildType.Tent] = build
+	}
+
+	{
+		build: BuildItem
+
+		build.cost = 40
+		build.size = {15, 15}
+		build.sprite_coords = {0, 0}
+		build.unlocked = true
+		build.type = .Drill
+		game_data.build_items[BuildType.Drill] = build
+	}
+
+	{
+		build: BuildItem
+
+		build.cost = 10
+		build.size = {15, 15}
+		build.sprite_coords = {0, 0}
+		build.unlocked = true
+		build.type = .ConveyorBelt
+		build.belt_direction = .EAST
+		game_data.build_items[BuildType.ConveyorBelt] = build
+	}
+
+	{
+		build: BuildItem
+		build.cost = 10
+		build.size = {16, 16}
+		build.sprite_coords = {0, 0}
+		build.unlocked = true
+		build.type = .Furnace
+		game_data.build_items[BuildType.Furnace] = build
+
+	}
+
+
+	game_data.money = 100
 	// data: [len(game_data.tiles)]byte
 
 
@@ -362,6 +446,27 @@ init :: proc "c" () {
 
 	create_chunk({0, 0})
 	new_chunk: ^Chunk = &game_data.chunks[{0, 0}]
+
+	{
+		collection_box: Building
+		collection_box.active = true
+		collection_box.build_progress = 100
+		collection_box.chunk_key = {0, 0}
+		collection_box.chunk_tile_position = {10, 10}
+		collection_box.position = {10, 10} * {16, 16}
+		collection_box.size = {16, 16}
+		collection_box.type = .CollectionBox
+
+		collection_box.sprite_coords = {0, 0}
+		append(&new_chunk.buildings, collection_box)
+	}
+
+
+	game_data.dropbox = TargetBlock {
+		chunk_key                = {0, 0},
+		tile_chunk_grid_position = {10, 10},
+		tile_world_grid_position = {10, 10},
+	}
 	for x: u32 = 0; x < CHUNK_GRID_SIZE_X; x += 1 {
 		for y: u32 = 0; y < CHUNK_GRID_SIZE_Y; y += 1 {
 
@@ -373,9 +478,17 @@ init :: proc "c" () {
 					active = false
 				}
 			}
+
+			if x == auto_cast game_data.dropbox.tile_world_grid_position.x &&
+			   y == auto_cast game_data.dropbox.tile_world_grid_position.y {
+				active = false
+			}
+
 			new_chunk.tiles[y * CHUNK_GRID_SIZE_X + x].active = active
+
 		}
 	}
+
 
 	allocate_tile_bitmasks({0, 0})
 
@@ -402,12 +515,16 @@ DamageType :: enum {
 
 
 update_entity_timers :: proc(ent: ^Entity, dt: f32) {
+
+	stamina_modifier: f32 = ent.state == .idle ? 0.15 : 1.0
+
+
 	ent.attack_timer = math.max(0.0, ent.attack_timer - dt)
 	ent.knockback_timer = math.max(0.0, ent.knockback_timer - dt)
 	ent.stun_timer = math.max(0.0, ent.stun_timer - dt)
-
+	ent.task_timer = math.max(0.0, ent.task_timer - dt)
+	ent.stamina_timer = math.max(0.0, ent.stamina_timer - dt * stamina_modifier)
 	ent.current_animation_timer += dt
-	ent.dodge_roll_cooldown = math.max(0.0, ent.dodge_roll_cooldown - dt)
 }
 
 
@@ -417,7 +534,6 @@ mouse_to_matrix :: proc() -> Vector2 {
 	mouse_y := inputs.screen_mouse_pos.y
 	proj := draw_frame.projection
 	view := draw_frame.camera_xform
-
 	// Normalize the mouse coordinates
 	ndc_x := (mouse_x / (auto_cast sapp.width() * 0.5)) - 1.0
 	ndc_y := (mouse_y / (auto_cast sapp.height() * 0.5)) - 1.0
@@ -467,6 +583,7 @@ check_wall_collision :: proc(player_pos: Vector2, player_radius: f32, wall: Vect
 	return rect_circle_collision(wall, player_pos, player_radius)
 }
 
+
 game_play :: proc() {
 
 
@@ -475,13 +592,13 @@ game_play :: proc() {
 	ticks_per_second = u64(1.0 / dt)
 	ticks_per_second = clamp(ticks_per_second, 60, 240)
 	defer game_data.ticks += 1
-
 	defer game_data.world_time_elapsed += app_dt
+
 
 	particle_dt: f32 = get_delta_time()
 
-	if inputs.button_just_pressed[sapp.Keycode.ESCAPE] {
-		if game_data.ui_state == .pause_menu {
+	if inputs.button_just_released[sapp.Keycode.ESCAPE] {
+		if game_data.ui_state == .pause_menu || game_data.ui_state == .upgrade_menu {
 			game_data.ui_state = nil
 		} else if game_data.ui_state == nil {
 			game_data.ui_state = .pause_menu
@@ -490,7 +607,7 @@ game_play :: proc() {
 
 
 	game_play_paused :=
-		game_data.ui_state != nil ||
+		game_data.ui_state != nil && game_data.ui_state != .build_menu ||
 		game_data.in_transition_timer > 0 ||
 		game_data.out_transition_timer > 0
 
@@ -518,20 +635,391 @@ game_play :: proc() {
 	}
 
 
+	upgrade_menu_width :: 800
+	upgrade_menu_height :: 500
+	row_margin :: 50
+	upgrade_row_height :: 100
+	upgrade_row_height_margin :: 25
+
+
+	build_menu_padding :: 30
+	build_menu_button_size :: 32 * 3
+	build_menu_width :: (build_menu_button_size * 2) + (build_menu_padding * 3)
+	build_menu_height :: 500
+	ui_border_width :: 10
+
+	upgrade_menu_row :: proc(description: string, position: Vector2, price: int) -> bool {
+		xform := transform_2d(position)
+		draw_rect_bordered_center_xform(
+			xform,
+			{upgrade_menu_width - row_margin * 2, upgrade_row_height},
+			10,
+			COLOR_WHITE,
+			COLOR_BLACK,
+		)
+
+		draw_text_center_center(xform, description, 32, COLOR_BLACK)
+
+
+		clicked := bordered_button(
+			position + {300, 0},
+			{200, 70},
+			fmt.tprint(price),
+			32,
+			3,
+			price > game_data.money,
+		)
+
+
+		return clicked
+	}
+
+
+	// @OVERWORLD UI
+	// we do it here so we can capture clicks
+	{
+		set_z_layer(.ui)
+		set_ui_projection_alignment(.bottom_left)
+		w, h := get_ui_dimensions()
+
+		if bordered_button(
+			{130, 50},
+			{150, 50},
+			"Dig",
+			28,
+			2,
+			game_data.ui_state == .upgrade_menu || game_data.ui_state == .pause_menu,
+			game_data.action_type == .Dig,
+		) {
+			game_data.action_type = game_data.action_type == .Dig ? .nil : .Dig
+		}
+
+		if bordered_button(
+			{300, 50},
+			{150, 50},
+			"Cancel",
+			28,
+			2,
+			game_data.ui_state == .upgrade_menu || game_data.ui_state == .pause_menu,
+			game_data.action_type == .Cancel,
+		) {
+			game_data.action_type = game_data.action_type == .Cancel ? .nil : .Cancel
+
+		}
+
+
+		if bordered_button(
+			{w - 130, 50},
+			{150, 50},
+			"UPGRADES",
+			28,
+			2,
+			game_data.ui_state == .upgrade_menu || game_data.ui_state == .pause_menu,
+		) {
+			game_data.ui_state = .upgrade_menu
+		}
+
+		if bordered_button(
+			{w - 130 - 170, 50},
+			{150, 50},
+			"BUILD",
+			28,
+			2,
+			game_data.ui_state == .build_menu || game_data.ui_state == .pause_menu,
+		) {
+			game_data.ui_state = .build_menu
+			game_data.ux_state.ux_x_offset = -450
+		}
+
+
+		#partial switch (game_data.ui_state) {
+		case .upgrade_menu:
+			{
+
+				set_ui_projection_alignment(.center_center)
+
+				draw_rect_bordered_center_xform(
+					transform_2d({0, 0}),
+					{upgrade_menu_width, upgrade_menu_height},
+					ui_border_width,
+					COLOR_WHITE,
+					COLOR_BLACK,
+				)
+
+
+				if upgrade_menu_row(
+					"Stamina",
+					{0, upgrade_row_height + upgrade_row_height_margin},
+					100,
+				) {
+
+				}
+
+				if upgrade_menu_row("Mining power", {0, 0}, 100) {
+
+				}
+
+				if upgrade_menu_row(
+					"Mining luck",
+					{0, -(upgrade_row_height + upgrade_row_height_margin)},
+					100,
+				) {
+
+				}
+
+
+				if bordered_button({0, -300}, {200, 70}, "X", 32, 3, false) {
+					log("FIRES")
+					game_data.ui_state = .nil
+				}
+
+			}
+
+
+		case .build_menu:
+			{
+				reached_end := false
+				set_ui_projection_alignment(.bottom_left)
+				using game_data
+				switch ux_anim_state {
+
+				case .fade_in:
+					reached := animate_to_target_f32(
+						&ux_x_offset,
+						build_menu_width * 0.5 + ui_border_width,
+						app_dt,
+						rate = 5.0,
+						good_enough = 0.5,
+					)
+					if reached {
+						game_data.ux_anim_state = .hold
+					}
+
+				case .hold:
+
+				case .fade_out:
+					reached_end = animate_to_target_f32(
+						&ux_x_offset,
+						-build_menu_width * 0.5 - 100,
+						app_dt,
+						rate = 10.0,
+						good_enough = 1,
+					)
+
+				}
+
+				position := Vector2{ux_x_offset, get_ui_height() * 0.5}
+				xform := transform_2d(position)
+				draw_rect_bordered_center_xform(
+					xform,
+					{build_menu_width, build_menu_height},
+					ui_border_width,
+					{1, 1, 1, 0.3},
+					COLOR_BLACK,
+				)
+
+				x := 0
+				y := 0
+
+				position = {ux_x_offset, position.y}
+				// @BUILD-ITEMS
+				for type in game_data.build_items {
+					item := game_data.build_items[type]
+					if !item.unlocked {
+						continue
+					}
+					defer x += 1
+					if x % 2 == 0 {
+						defer y -= 1
+						defer x = 0
+					}
+
+
+					placement_pos :=
+						(position - build_menu_width * 0.5) +
+						build_menu_button_size * 0.5 +
+						build_menu_padding +
+						({
+									build_menu_button_size + build_menu_padding,
+									build_menu_button_size + build_menu_padding,
+								} *
+								{auto_cast x, auto_cast y})
+					xform = transform_2d(placement_pos)
+					if bordered_button(
+						placement_pos,
+						{build_menu_button_size, build_menu_button_size},
+						"",
+						32,
+						auto_cast item.type + 10,
+						item.cost > game_data.money,
+					) {
+						game_data.current_selected_build_type = item.type
+					}
+					sprite := get_build_item_sprite(type)
+					draw_quad_center_xform(
+						xform,
+						{32 * 2, 32 * 2},
+						sprite,
+						get_frame_uvs(sprite, item.sprite_coords, {16, 16}),
+					)
+				}
+				if inputs.button_just_released[sapp.Keycode.ESCAPE] {
+					if inputs.button_just_released[sapp.Keycode.ESCAPE] {
+						if game_data.current_selected_build_type != .nil {
+							game_data.current_selected_build_type = .nil
+						} else {
+							game_data.ux_anim_state = .fade_out
+						}
+					}
+				}
+
+				if bordered_button(position - {0, 300}, {200, 70}, "X", 32, 3, false) {
+					game_data.current_selected_build_type = .nil
+					game_data.ux_anim_state = .fade_out
+				}
+
+				if reached_end {
+					game_data.ui_state = .nil
+					game_data.ux_anim_state = .fade_in
+					game_data.ux_state = {}
+				}
+			}
+
+
+		}
+
+
+		set_z_layer(.background)
+	}
+
+
 	using sapp.Keycode
 	x := f32(int(inputs.button_down[D]) - int(inputs.button_down[A]))
 	y := f32(int(inputs.button_down[W]) - int(inputs.button_down[S]))
 
-	camera.position += {x, y} * dt * 130
+	camera.position += {x, y} * dt * (130 / game_data.camera_zoom)
 
 	draw_frame.camera_xform = translate_mat4(Vector3{-camera.position.x, -camera.position.y, 0})
 	set_ortho_projection(game_data.camera_zoom)
 
 	mouse_world_position = mouse_to_matrix()
 
+	{
+		// // @dropbox
+		// set_z_layer(.background)
+		// xform := transform_2d(tile_pos_to_world_pos(game_data.dropbox.tile_world_grid_position))
+		// draw_quad_center_xform(xform, {24, 24}, .storage_box, DEFAULT_UV, COLOR_WHITE)
+	}
+	{
+		//@placing building
+
+		if game_data.current_selected_build_type != .nil {
+			item := &game_data.build_items[game_data.current_selected_build_type]
+			tile_position := world_pos_to_tile_pos(mouse_world_position)
+			position := tile_pos_to_world_pos(tile_position)
+			chunk_key := get_chunk_key(position)
+			cant_place :=
+				is_tile_active(chunk_key, tile_position.x, tile_position.y) ||
+				is_tile_active(chunk_key, tile_position.x + 1, tile_position.y) ||
+				is_tile_active(chunk_key, tile_position.x, tile_position.y + 1) ||
+				is_tile_active(chunk_key, tile_position.x + 1, tile_position.y + 1)
+			chunk := &game_data.chunks[chunk_key]
+
+			aabb: AABB = {
+				size     = item.size * 0.8,
+				position = position,
+			}
+			for b in chunk.buildings {
+				if is_aabb_overlapping(AABB{size = b.size, position = b.position}, aabb) {
+					cant_place = true
+					break
+				}
+			}
+
+
+			if inputs.button_just_released[sapp.Keycode.R] {
+				belt_direction_len := len(ConveyorDirections)
+				if int(item.belt_direction) >= belt_direction_len {
+					item.belt_direction = auto_cast 0
+				} else {
+					item.belt_direction = auto_cast (int(item.belt_direction) + 1)
+				}
+			}
+
+			set_z_layer(.ui)
+			if game_data.current_selected_build_type == .ConveyorBelt {
+				render_conveyor_belt(
+					item.belt_direction,
+					position,
+					cant_place ? {1, 0.3, 0.3, 0.5} : {1, 1, 1, 0.3},
+				)
+			} else {
+				sprite := get_build_item_sprite(game_data.current_selected_build_type)
+				draw_quad_center_xform(
+					transform_2d(position),
+					{16, 16},
+					sprite,
+					get_frame_uvs(sprite, item.sprite_coords, {16, 16}),
+					cant_place ? {1, 0.3, 0.3, 0.5} : {1, 1, 1, 0.3},
+				)
+			}
+
+			if !cant_place &&
+			   !ui_state.click_captured &&
+			   inputs.mouse_just_pressed[sapp.Mousebutton.LEFT] {
+				ui_state.click_captured = true
+
+
+				b: Building
+				b.active = true
+				b.working = true
+				b.build_progress = 0
+				b.chunk_key = chunk_key
+				b.position = position
+				b.size = item.size
+				b.type = item.type
+				b.belt_direction = item.belt_direction
+				b.world_position = tile_position
+				b.sprite_coords = item.sprite_coords
+				b.chunk_tile_position = get_chunk_local_tile_position(b.position)
+				b.output_direction = .East
+				building_index := len(chunk.buildings)
+
+				append(&chunk.buildings, b)
+
+				game_data.money -= item.cost
+				game_data.current_selected_build_type = .nil
+				if len(game_data.selected_miner_ids) > 0 {
+
+					for &miner in game_data.miners {
+						for selected_id in game_data.selected_miner_ids {
+							if selected_id == miner.id {
+								add_new_building_task(&b, &miner, building_index)
+								break
+							}
+
+						}
+					}
+				} else {
+					for &miner in game_data.miners {
+
+						miner_grid_position := world_pos_to_tile_pos(miner.position)
+
+						if manhattan_dist(miner_grid_position, b.world_position) > 30 {
+							continue
+						}
+
+						add_new_building_task(&b, &miner, building_index)
+					}
+
+				}
+			}
+		}
+	}
+
 
 	// @gameplay inputs 
-	if !game_play_paused {
+	if !game_play_paused && !ui_state.click_captured {
 
 
 		if inputs.mouse_scroll_delta != {} {
@@ -543,61 +1031,86 @@ game_play :: proc() {
 		}
 
 
-		if inputs.mouse_just_pressed[sapp.Mousebutton.RIGHT] {
+		using sapp
+		buttons: [1]Mousebutton = {sapp.Mousebutton.LEFT}
+
+		just_released_btn := sapp.Mousebutton.INVALID
+		size: Vector2
+		for button in buttons {
+			if inputs.mouse_just_pressed[button] && !game_data.selecting {
+				game_data.start_selecting = true
+				break
+			} else if inputs.mouse_down[button] &&
+			   !game_data.selecting &&
+			   game_data.start_selecting {
+				game_data.selecting = true
+				game_data.start_drag = mouse_world_position
+				game_data.start_selecting = false
+				break
+			} else if inputs.mouse_just_released[button] {
+				size = {
+					mouse_world_position.x - game_data.start_drag.x,
+					mouse_world_position.y - game_data.start_drag.y,
+				}
+
+				just_released_btn = button
+				break
+			}
+		}
+
+
+		if just_released_btn == Mousebutton.LEFT &&
+		   len(game_data.selected_miner_ids) > 0 &&
+		   linalg.length(size) <= 10 &&
+		   game_data.start_selecting {
+
+			for &miner in game_data.miners {
+				for selected_id in game_data.selected_miner_ids {
+					if selected_id == miner.id {
+
+						path := find_path(
+							world_pos_to_tile_pos(miner.position),
+							world_pos_to_tile_pos(mouse_world_position),
+						)
+						if path != nil {
+							miner.node_path = slice.clone_to_dynamic(path[:])
+						}
+						delete(path)
+
+						break
+					}
+				}
+			}
 			clear(&game_data.selected_miner_ids)
 		}
 
-		if inputs.mouse_down[sapp.Mousebutton.LEFT] && !game_data.selecting {
-			game_data.start_drag = mouse_world_position
-			game_data.selecting = true
-		} else if inputs.mouse_just_pressed[sapp.Mousebutton.LEFT] {
-			size: Vector2 = {
-				mouse_world_position.x - game_data.start_drag.x,
-				mouse_world_position.y - game_data.start_drag.y,
-			}
-
-
-			if len(game_data.selected_miner_ids) > 0 && linalg.length(size) <= 10 {
-
-				set_z_layer(.ui)
-
-				for &miner in game_data.miners {
-					for selected_id in game_data.selected_miner_ids {
-						if selected_id == miner.id {
-
-							path := find_path(
-								world_pos_to_tile_pos(miner.position),
-								world_pos_to_tile_pos(mouse_world_position),
-							)
-							if path != nil {
-								miner.node_path = slice.clone_to_dynamic(path[:])
-							}
-							delete(path)
-
-							break
-						}
-					}
-				}
-				clear(&game_data.selected_miner_ids)
-			}
-
-
-			if game_data.selecting {
+		if just_released_btn == .LEFT {
+			if game_data.action_type == .nil && game_data.selecting {
 				clear(&game_data.selected_miner_ids)
 				for miner in game_data.miners {
 					if aabb_contains(game_data.start_drag, size, miner.position) {
-
 						append(&game_data.selected_miner_ids, miner.id)
 					}
 				}
-				game_data.selecting = false
 			}
 
+			if game_data.action_type == .Dig && game_data.selecting {
+				update_miner_destroy_block_task(game_data.start_drag, size)
+			}
+
+			if game_data.action_type == .Cancel && game_data.selecting {
+				update_miner_cancel_destroy_block_task(game_data.start_drag, size)
+			}
+
+			if just_released_btn != Mousebutton.INVALID && game_data.selecting {
+				game_data.selecting = false
+			}
 		}
 
-		if game_data.selecting {
 
-			color := Vector4{0, 0, 0.8, 0.4}
+		if game_data.selecting {
+			color :=
+				game_data.selecting_mouse_btn == .LEFT ? Vector4{0, 0, 0.8, 0.4} : Vector4{0.8, 0, 0.0, 0.4}
 			// border_color:= {0, 0, 0.8, 0.8}
 			size: Vector2 = {
 				mouse_world_position.x - game_data.start_drag.x,
@@ -605,6 +1118,11 @@ game_play :: proc() {
 			}
 			set_z_layer(.ui)
 			draw_rect_xform(transform_2d(game_data.start_drag), size, color)
+		}
+
+
+		if inputs.mouse_just_released[sapp.Mousebutton.LEFT] {
+			game_data.start_selecting = false
 		}
 
 	}
@@ -637,7 +1155,16 @@ game_play :: proc() {
 		for tile in chunk.tiles {
 
 			xform := transform_2d(tile.position)
-
+			if tile.queued_for_destruction {
+				set_z_layer(.ui)
+				draw_quad_center_xform(
+					xform,
+					{TILE_SIZE, TILE_SIZE},
+					.destruction_block,
+					DEFAULT_UV,
+					{1, 1, 1, 0.4},
+				)
+			}
 
 			if !tile.active {
 				color := hex_to_rgb(0x6b4337)
@@ -647,6 +1174,22 @@ game_play :: proc() {
 				set_z_layer(.background)
 				xform := transform_2d(tile.position)
 				draw_quad_center_xform(xform, {TILE_SIZE, TILE_SIZE}, .nil, DEFAULT_UV, color)
+
+				deposit :=
+					chunk.deposits[tile.chunk_grid_position.y * auto_cast CHUNK_GRID_SIZE_X + tile.chunk_grid_position.x]
+				if deposit.active {
+					sprite_x: int = auto_cast deposit.type
+					sprite_y := deposit.variant
+
+					xform := transform_2d(deposit.position)
+					draw_quad_center_xform(
+						xform,
+						{16, 16},
+						.deposit,
+						get_frame_uvs(.deposit, {sprite_x, sprite_y}, {16, 16}),
+					)
+				}
+
 				continue
 			}
 
@@ -670,26 +1213,758 @@ game_play :: proc() {
 				COLOR_WHITE,
 			)
 
+		}
 
-			if tile.grid_position == world_pos_to_tile_pos(mouse_world_position) {
-				set_z_layer(.ui)
+		set_z_layer(.background)
+
+		// @transport belt
+		for conveyor_belt in chunk.conveyor_belts {
+			render_conveyor_belt(
+				conveyor_belt.facing_direction,
+				conveyor_belt.position,
+				COLOR_WHITE,
+			)
+		}
+
+		// @buildings
+		for &building in chunk.buildings {
+
+			built := building.build_progress >= 100
+			if built {
+				#partial switch (building.type) {
+				case .Drill:
+					DRILL_ANIMATION_TIME :: 0.2
+					building.current_animation_time += dt
+					if building.current_animation_frame == 0 {
+						if !check_deposit_active(
+							chunk.chunk_grid_position,
+							building.chunk_tile_position,
+						) {
+
+							building.working = false
+						}
+					}
+					if building.working &&
+					   building.current_animation_time >= DRILL_ANIMATION_TIME {
+						building.current_animation_time = 0
+						building.current_animation_frame += 1
+						if building.current_animation_frame > 19 {
+							building.current_animation_frame = 0
+							is_active_deposit, resource_type := mine_deposit(
+								chunk.chunk_grid_position,
+								building.chunk_tile_position,
+							)
+
+							if !is_active_deposit {
+								building.working = false
+							}
+							mined_resource: WorldItem
+							mined_resource.active = true
+							mined_resource.type = .MinedResource
+							mined_resource.mined_resource_type = resource_type
+							mined_resource.position =
+								building.position +
+								cardinal_direction_to_vector(building.output_direction) * 16
+							append(&game_data.world_items, mined_resource)
+						}
+					}
+				case .Furnace:
+					FURNACE_ANIMATION_TIME :: 0.2
+					building.current_animation_time += dt
+					if building.current_animation_frame == 0 {
+						if building.furnace_smelt_count <= 0 {
+							building.working = false
+						}
+					}
+					if building.working &&
+					   building.current_animation_time >= FURNACE_ANIMATION_TIME {
+						building.current_animation_time = 0
+						building.current_animation_frame += 1
+						if building.current_animation_frame > 7 {
+							building.current_animation_frame = 0
+
+							smelt_deposit(&building)
+
+							mined_resource: WorldItem
+							mined_resource.active = true
+							mined_resource.type = .SmeltedResource
+							mined_resource.mined_resource_type = building.furnace_smelt_type
+							mined_resource.position =
+								building.position +
+								cardinal_direction_to_vector(building.output_direction) * 16
+							append(&game_data.world_items, mined_resource)
+
+							if building.furnace_smelt_count <= 0 {
+								building.working = false
+							}
+
+						}
+					}
+				}
+
+
+			}
+
+			if !building.invisible {
+				sprite := get_build_item_sprite(building.type)
 				draw_quad_center_xform(
-					xform,
-					{TILE_SIZE, TILE_SIZE},
-					.nil,
-					DEFAULT_UV,
-					{1, 0, 0, 0.3},
+					transform_2d(building.position),
+					{16, 16},
+					sprite,
+					get_frame_uvs(sprite, {building.current_animation_frame, 0}, {16, 16}),
+					building.build_progress < 100 ? {0.3, 0.3, 1.0, 0.5} : COLOR_WHITE,
 				)
 
-				if inputs.mouse_just_pressed[sapp.Mousebutton.LEFT] {
-					chunk := &game_data.chunks[chunk.chunk_grid_position]
-					chunk.tiles[tile.chunk_grid_position.y * auto_cast CHUNK_GRID_SIZE_X + tile.chunk_grid_position.x].active =
-						false
+			}
 
-					// performance, we should just update neighbours	
-					allocate_tile_bitmasks(chunk.chunk_grid_position)
-					log(
-						chunk.tiles[tile.chunk_grid_position.y * auto_cast CHUNK_GRID_SIZE_X + tile.chunk_grid_position.x].active,
+
+			if building.build_progress < 100 {
+				draw_rect_bordered_xform(
+					transform_2d(building.position + {-16, 16}),
+					{32, 2},
+					1.0,
+					COLOR_WHITE,
+					COLOR_BLACK,
+				)
+
+				draw_rect_xform(
+					transform_2d(building.position + {-16, 16}),
+					{32 * building.build_progress * 0.01, 2},
+					COLOR_GREEN,
+				)
+			}
+		}
+
+	}
+
+
+	{
+		//@world items
+
+		viewbox := get_frame_view()
+		for &world_item in game_data.world_items {
+
+
+			if is_point_in_viewbox(viewbox, world_item.position) {
+
+				switch (world_item.type) {
+				case .MinedResource:
+					draw_quad_center_xform(
+						transform_2d(world_item.position),
+						{16, 16},
+						.ore,
+						get_frame_uvs(
+							.ore,
+							{auto_cast world_item.mined_resource_type, 0},
+							{16, 16},
+						),
+					)
+				case .SmeltedResource:
+					draw_quad_center_xform(
+						transform_2d(world_item.position),
+						{16, 16},
+						.ore,
+						get_frame_uvs(
+							.ore,
+							{auto_cast world_item.mined_resource_type, 0},
+							{16, 16},
+						),
+					)
+				}
+			}
+
+			chunk_key := get_chunk_key(world_item.position)
+			chunk_pos := get_chunk_local_tile_position(world_item.position)
+			for belt in game_data.chunks[chunk_key].conveyor_belts {
+				if belt.chunk_position == chunk_pos {
+
+					direction: Vector2 =
+						get_conveyor_direction(belt.facing_direction) *
+						get_conveyor_speed(belt.type)
+
+					world_item.position += direction * dt
+					continue
+				}
+			}
+		}
+	}
+
+	{
+		// @miners
+		for &miner in game_data.miners {
+
+			update_entity_timers(&miner, dt)
+
+			if miner.current_task == .nil {
+				// find next best task if one
+				for task in MinerTask {
+					if task == .build_building {
+						if miner.tasks[task].active &&
+						   len(miner.tasks[task].block_targets) > 0 &&
+						   miner.tasks[task].current_target_index > -1 {
+							miner.current_task = task
+							if len(miner.node_path) == 0 {
+								generate_path_for_building(&miner)
+							}
+							break
+
+						}
+					} else if miner.tasks[task].active &&
+					   len(miner.tasks[task].block_targets) > 0 {
+						miner.current_task = task
+						break
+					}
+				}
+			}
+
+			// if task != .heading_to_rest &&
+			//    task != .return_item &&
+			//    miner.stamina_timer <= 0 &&
+			//    miner.state != .sleeping {
+			// 	// miner.stamina -= 1
+			// 	miner.stamina_timer = STAMINA_TIMER
+			// 	if miner.stamina <= 0 {
+			// 		miner.stamina = 0
+
+			// 		chunk_key := get_chunk_key(miner.position)
+			// 		ok, building := find_closest_building_type_in_chunk(
+			// 			chunk_key,
+			// 			world_pos_to_tile_pos(miner.position),
+			// 			.Tent,
+			// 		)
+
+			// 		if ok {
+			// 			index := len(miner.task_queue)
+			// 			add_new_task(.heading_to_rest, &miner)
+			// 			miner.current_task_target_position = building.world_position
+			// 		} else {
+			// 			miner.state = .sleeping
+			// 		}
+			// 	}
+			// }
+
+
+			{
+				// @DEBUG @REMOVE @TESTING
+				if miner.mined_resource != .nil && miner.current_task != .return_item {
+					log(miner.mined_resource, miner.current_task == .return_item)
+
+					assert(
+						false,
+						fmt.tprintfln(
+							"ERROR, allocated task while holding resource ",
+							miner.mined_resource,
+						),
+					)
+				}
+
+			}
+
+
+			switch miner.current_task {
+			case .nil:
+				set_state(&miner, .idle)
+				if len(miner.node_path) > 0 {
+					clear(&miner.node_path)
+					log("MISSING NODE PATH CLEANUP")
+				}
+			case .heading_to_rest:
+				miner_block_pos := world_pos_to_tile_pos(miner.position)
+				if manhattan_dist(
+					   miner.tasks[.heading_to_rest].block_targets[0].tile_world_grid_position,
+					   miner_block_pos,
+				   ) ==
+				   0 {
+					miner.resting_in_tent = true
+					remove_current_task(&miner)
+				}
+			case .build_building:
+				{
+					miner_block_pos := world_pos_to_tile_pos(miner.position)
+					task_index := miner.tasks[.build_building].current_target_index
+
+					if task_index > -1 &&
+					   miner.tasks[.build_building].active &&
+					   len(miner.tasks[.build_building].block_targets) > 0 {
+
+						if manhattan_dist(
+							   miner.tasks[.build_building].block_targets[task_index].miner_placement_world_position,
+							   miner_block_pos,
+						   ) ==
+						   0 {
+							set_state(&miner, .mining)
+							if miner.task_timer <= 0 {
+								target := miner.tasks[.build_building].block_targets[task_index]
+								miner.task_timer = BUILD_BUILDING_TIMER
+								chunk_key := target.chunk_key
+								chunk := &game_data.chunks[chunk_key]
+								building: ^Building = &chunk.buildings[target.building_index]
+								building.build_progress += 10
+
+								if building.build_progress >= 100 && !building.built {
+									building.built = true
+									building_finished(building.world_position, 40)
+									if building.type == .ConveyorBelt {
+										belt: ConveyorBelt
+										belt.position = building.position
+										belt.type = .SLOW
+										belt.facing_direction = building.belt_direction
+										belt.chunk_position = building.chunk_tile_position
+										append(&chunk.conveyor_belts, belt)
+
+										building.invisible = true
+									}
+								}
+							}
+						}
+
+					}
+				}
+			case .return_item:
+				{
+					miner_block_pos := world_pos_to_tile_pos(miner.position)
+					if len(miner.tasks[.build_building].block_targets) > 0 &&
+					   manhattan_dist(
+						   miner.tasks[.build_building].block_targets[0].tile_world_grid_position,
+						   miner_block_pos,
+					   ) ==
+						   0 {
+						remove_current_task(&miner)
+
+
+						switch (miner.mined_resource) {
+						case .nil:
+						case .Copper:
+						case .Iron:
+							game_data.money += 3
+						case .Gold:
+							game_data.money += 5
+						case .Diamond:
+							game_data.money += 10
+						}
+
+						miner.mined_resource = .nil
+
+
+					}
+				}
+			case .destroy_blocks:
+				{
+					task := &miner.tasks[.destroy_blocks]
+					block_targets := &task.block_targets
+
+					if task.current_target_index == -1 && len(block_targets) > 0 {
+						// find a block to destroy
+						closest_dist: f32 = math.inf_f32(1)
+						closest_block: Vector2Int = {}
+						miner_block_pos := world_pos_to_tile_pos(miner.position)
+
+						for i := 0; i < len(block_targets); i += 1 {
+							block := block_targets[i]
+							dist := manhattan_dist(block.tile_world_grid_position, miner_block_pos)
+							if dist < closest_dist {
+								ok, pos := get_closest_free_block_next_to_target(
+									block.tile_world_grid_position,
+									block.tile_chunk_grid_position,
+									block.chunk_key,
+									miner_block_pos,
+								)
+								if ok {
+									task.block_targets[i].miner_placement_world_position = pos
+									task.current_target_index = i
+									closest_dist = dist
+									closest_block = block.tile_world_grid_position
+								}
+							}
+						}
+						if task.current_target_index == -1 {
+							log(miner.id)
+							assert(false)
+						}
+						// assert(task.current_target_index > -1)
+						clear(&miner.node_path)
+					}
+
+
+					if len(block_targets) > 0 &&
+					   len(miner.node_path) == 0 &&
+					   manhattan_dist(
+						   task.block_targets[task.current_target_index].miner_placement_world_position,
+						   world_pos_to_tile_pos(miner.position),
+					   ) >
+						   0 {
+						path := find_path(
+							world_pos_to_tile_pos(miner.position),
+							task.block_targets[task.current_target_index].miner_placement_world_position,
+						)
+						if path != nil {
+							miner.node_path = slice.clone_to_dynamic(path[:])
+						} else {
+							log("no path")
+						}
+						delete(path)
+					}
+
+
+					if len(block_targets) > 0 &&
+					   manhattan_dist(
+						   task.block_targets[task.current_target_index].miner_placement_world_position,
+						   world_pos_to_tile_pos(miner.position),
+					   ) ==
+						   0 {
+						if miner.state != .mining {
+							miner.task_timer = MINE_BLOCK_TIMER
+						}
+
+						set_state(&miner, .mining)
+
+						block_target := task.block_targets[task.current_target_index]
+						target_pos := tile_pos_to_world_pos(block_target.tile_world_grid_position)
+
+						dir: Vector2Int =
+							block_target.tile_world_grid_position -
+							world_pos_to_tile_pos(miner.position)
+						miner.last_face_direction = dir
+					}
+
+					if task.current_target_index == -1 && len(task.block_targets) == 0 {
+						remove_current_task(&miner)
+						set_state(&miner, .idle)
+					}
+
+
+				}
+			}
+
+
+			if len(miner.node_path) > 0 {
+				last := len(miner.node_path) - 1
+				target := miner.node_path[last]
+				target_pos := tile_pos_to_world_pos(target)
+				if target_pos - miner.position != 0 &&
+				   !almost_equals_v2(target_pos, miner.position, 0.5) {
+					dir: Vector2 = linalg.vector_normalize(target_pos - miner.position)
+					miner.last_face_direction.x = auto_cast math.round(dir.x)
+					miner.position += dir * dt * miner.speed
+					previous_state := miner.state
+
+					set_walking_frame := false
+					if miner.state != .walking {
+						set_walking_frame = true
+					}
+					if miner.mined_resource != .nil {
+						set_state(&miner, .collecting)
+					} else {
+						set_state(&miner, .walking)
+					}
+
+					if previous_state != .walking && miner.state == .walking {
+						miner.current_animation_frame = 2
+					}
+
+					if previous_state != .collecting && miner.state == .collecting {
+						miner.current_animation_frame = 15
+					}
+				} else {
+					pop(&miner.node_path)
+				}
+			}
+
+			// else if miner.current_block_target == nil {
+			// 	set_state(&miner, .idle)
+			// }
+
+			ent_animation_frame_x := 0
+			rotation: f32 = 0
+			animation_frame_offset := 0
+			switch miner.state {
+			case .idle:
+				if miner.current_animation_timer >= IDLE_ANIMATION_TIME {
+					miner.current_animation_timer = 0
+					miner.current_animation_frame += 1
+					if miner.current_animation_frame > 1 {
+						miner.current_animation_frame = 0
+					}
+
+				}
+			case .walking:
+				using miner
+				position.y += sine_breathe_alpha(game_data.world_time_elapsed) * speed * dt
+				position.y -= cos_breathe_alpha(game_data.world_time_elapsed) * speed * dt
+
+				rotation =
+					cos_breathe_alpha(game_data.world_time_elapsed * 0.75) * 0.1 -
+					sine_breathe_alpha(game_data.world_time_elapsed * 0.75) * 0.1
+
+				in_walk_cycle_anim := miner.current_animation_frame == 2
+				anim_time: f32 =
+					in_walk_cycle_anim ? WALK_ANIMATION_TIME : WALK_ANIMATION_TIME * 0.6
+
+				if miner.current_animation_timer >= anim_time {
+					miner.current_animation_timer = 0
+					miner.current_animation_frame = miner.current_animation_frame == 0 ? 2 : 0
+				}
+
+			case .collecting:
+				using miner
+				position.y += sine_breathe_alpha(game_data.world_time_elapsed) * speed * dt
+				position.y -= cos_breathe_alpha(game_data.world_time_elapsed) * speed * dt
+
+				rotation =
+					cos_breathe_alpha(game_data.world_time_elapsed * 0.75) * 0.1 -
+					sine_breathe_alpha(game_data.world_time_elapsed * 0.75) * 0.1
+
+				in_walk_cycle_anim := miner.current_animation_frame == 15
+				anim_time: f32 =
+					in_walk_cycle_anim ? WALK_ANIMATION_TIME : WALK_ANIMATION_TIME * 0.6
+
+				if miner.current_animation_timer >= anim_time {
+					miner.current_animation_timer = 0
+					miner.current_animation_frame = miner.current_animation_frame == 16 ? 15 : 16
+				}
+
+			case .sleeping:
+				using miner
+				if stamina_timer <= 0 {
+					log("STAMina UPDATEd")
+					stamina_timer = STAMINA_REST_TIMER
+					if resting_in_tent {
+						stamina += 2
+					} else {
+						stamina += 1
+					}
+
+
+					if stamina == 100 {
+						log("MINER IS RESTED")
+						miner.state = .idle
+						miner.resting_in_tent = false
+					}
+
+					animation_frame_offset = 17
+				}
+
+
+			case .mining:
+				using miner
+				in_mining_cycle_anim :=
+					miner.current_animation_frame == 3 || miner.current_animation_frame == 5
+				anim_time: f32 =
+					in_mining_cycle_anim ? WALK_ANIMATION_TIME : WALK_ANIMATION_TIME * 0.3
+
+				if last_face_direction.y > 0 {
+					animation_frame_offset = 4
+				} else if last_face_direction.y < 0 {
+					animation_frame_offset = 8
+				}
+				if miner.current_animation_frame == 0 {
+					miner.current_animation_frame = 3
+				}
+				if miner.current_animation_timer >= anim_time {
+					miner.current_animation_timer = 0
+					miner.current_animation_frame += 1
+					if miner.current_animation_frame > 6 {
+						miner.current_animation_frame = 3
+					}
+				}
+
+				task := miner.tasks[.destroy_blocks]
+				if task_timer <= 0.0 && task.current_target_index != -1 {
+					task_timer = MINE_BLOCK_TIMER
+					block_target_to_remove := task.block_targets[task.current_target_index]
+					if damage_block_and_check_destroyed(&miner, block_target_to_remove, 1.0) {
+
+						// @TODO @PERFORMANCE
+						// maybe check nearby miners instead?
+						for &m in game_data.miners {
+							m_task := &m.tasks[.destroy_blocks]
+							index := -1
+							blocks: for i := 0; i < len(m_task.block_targets); i += 1 {
+								if block_target_to_remove.tile_world_grid_position ==
+								   m_task.block_targets[m_task.current_target_index].tile_world_grid_position {
+
+									if index > -1 {
+										log("MULTIPLE TO REMOVE???")
+									}
+
+									index = i
+									log(
+										"BLOCK REMOVED FROM M",
+										block_target_to_remove.tile_world_grid_position,
+										i,
+									)
+									break blocks
+
+
+								}
+							}
+
+							if index > -1 {
+								unordered_remove(&m_task.block_targets, index)
+								if index == m_task.current_target_index {
+									set_state(&m, .idle)
+								}
+								m_task.current_target_index = -1
+							} else {
+								log("DIDNT FIND BLOCK TO REMOVE", block_target_to_remove)
+								log("M BLOCKS", m.tasks[.destroy_blocks].block_targets)
+							}
+						}
+
+
+						allocate_tile_neighbour_bitmasks(
+							block_target_to_remove.chunk_key,
+							block_target_to_remove.tile_chunk_grid_position,
+						)
+
+
+						result := rand.float32_range(0, 30)
+						block_dropped_item := false
+						miner.mined_resource = .nil
+						// if result > 28 {
+						// 	// diamond
+						// 	block_dropped_item = true
+						// 	miner.mined_resource = .diamond
+						// 	append(&chunk.deposits)
+
+						// } else if result > 25 {
+						// 	block_dropped_item = true
+						// 	miner.mined_resource = .gold_ore
+						// } else if result > 20 {
+						// 	block_dropped_item = true
+						// 	miner.mined_resource = .silver_ore
+						// }
+
+
+						if block_dropped_item {
+							miner_tile_world_pos := world_pos_to_tile_pos(miner.position)
+							dropoff_zone_world_til_pos :=
+								game_data.dropbox.tile_world_grid_position
+
+
+							ok, position := get_closest_free_block_next_to_target(
+								game_data.dropbox.tile_world_grid_position,
+								game_data.dropbox.tile_chunk_grid_position,
+								game_data.dropbox.chunk_key,
+								miner_tile_world_pos,
+							)
+							// if ok {
+							// 	path := find_path(world_pos_to_tile_pos(miner.position), position)
+							// 	if path != nil {
+							// 		miner.node_path = slice.clone_to_dynamic(path[:])
+							// 		add_new_task(.return_item, &miner)
+
+
+							// 		target: TargetBlock
+							// 		target.tile_world_grid_position = position
+							// 		target.chunk_key = game_data.dropbox.chunk_key
+							// 		target.
+							// 		target.tile_chunk_grid_position = append(
+							// 			&miner.tasks[.return_item].block_targets,
+							// 			target,
+							// 		)
+
+							// 	} else {
+							// 		log("CANT FIND PATH")
+							// 	}
+							// 	delete(path)
+							// }
+
+						}
+					}
+				}
+
+			}
+
+
+			should_render := !miner.resting_in_tent
+
+			if should_render {
+				shadow_xform := transform_2d(miner.position + {0, -3})
+				{
+					set_z_layer(.shadow)
+
+					draw_quad_center_xform(
+						shadow_xform,
+						{16, 16},
+						.shadows,
+						DEFAULT_UV,
+						COLOR_WHITE,
+					)
+				}
+				set_z_layer(.game_play)
+
+				xform := transform_2d(miner.position)
+
+				selected := false
+				for id in game_data.selected_miner_ids {
+					if id == miner.id {
+						selected = true
+						break
+					}
+				}
+
+				if selected {
+					draw_quad_center_xform(shadow_xform, {16, 16}, .selected)
+				}
+
+				set_z_layer(.ui)
+				draw_rect_bordered_xform(
+					xform * transform_2d({-10, 10}),
+					{20, 2},
+					1.0,
+					COLOR_WHITE,
+					COLOR_BLACK,
+				)
+
+
+				draw_rect_xform(
+					xform * transform_2d({-10, 10}),
+					{20 * (miner.stamina / 100), 2},
+					COLOR_GREEN,
+				)
+
+				set_z_layer(.game_play)
+
+				if miner.last_face_direction.x < 0 {
+					xform = xform * transform_2d({}, 0, {-1, 1})
+				}
+
+
+				if miner.state == .walking || miner.state == .collecting {
+					xform *= transform_2d({-5, -5}, rotation)
+					xform *= transform_2d({5, 5})
+				}
+
+
+				draw_quad_center_xform(
+					xform,
+					{16, 16},
+					.miners,
+					get_frame_uvs(
+						.miners,
+						{
+							miner.current_animation_frame + animation_frame_offset,
+							auto_cast miner.type,
+						},
+						{16, 16},
+					),
+					COLOR_WHITE,
+				)
+
+
+				xform *= transform_2d({0, 10})
+				if miner.mined_resource != .nil {
+					draw_quad_center_xform(
+						xform,
+						{16, 16},
+						.mined_resources,
+						get_frame_uvs(
+							.mined_resources,
+							{auto_cast miner.mined_resource - 1, 0},
+							{16, 16},
+						),
+						COLOR_WHITE,
 					)
 				}
 			}
@@ -697,55 +1972,85 @@ game_play :: proc() {
 
 		}
 	}
-
-
 	{
-		// @miners
-		for &miner in game_data.miners {
-			if len(miner.node_path) > 0 {
-				last := len(miner.node_path) - 1
+		using imgui
+		using strings
+		imgui.SetNextItemWidth(200.0)
+		imgui.SetNextWindowSize({600, 800}, imgui.Cond.FirstUseEver)
 
-				target := miner.node_path[last]
-				target_pos := tile_pos_to_world_pos(target)
-				if target_pos - miner.position != 0 &&
-				   !almost_equals_v2(target_pos, miner.position, 0.5) {
-					dir: Vector2 = linalg.vector_normalize(target_pos - miner.position)
-					miner.position += dir * dt * miner.speed
-				} else {
-					pop(&miner.node_path)
-				}
-			}
+		Begin("Debug Menu")
 
+		for &ent in game_data.miners {
 
-			shadow_xform := transform_2d(miner.position + {0, -3})
-			{
-				set_z_layer(.shadow)
-
-				draw_quad_center_xform(shadow_xform, {16, 16}, .shadows, DEFAULT_UV, COLOR_WHITE)
-			}
-			set_z_layer(.game_play)
-			xform := transform_2d(miner.position)
-
-			selected := false
-			for id in game_data.selected_miner_ids {
-				if id == miner.id {
-					selected = true
-					break
-				}
-			}
-
-			if selected {
-				draw_quad_center_xform(shadow_xform, {16, 16}, .selected)
-			}
-			draw_quad_center_xform(
-				xform,
-				{16, 16},
-				.miners,
-				get_frame_uvs(.miners, {0, 0}, {16, 16}),
-				COLOR_WHITE,
+			ent_id := strings.clone_to_cstring(
+				fmt.tprintfln("Ent ID: {}", ent.id),
+				temp_allocator(),
 			)
+			imgui.Text(ent_id)
+			imgui.SliderFloat("Speed", &ent.speed, 0, 200)
+			{
+				current_task: i32 = auto_cast ent.current_task
+				b: Builder
+				countie: i32
+				for kind in MinerTask {
+					write_string(&b, fmt.tprint(kind))
+					write_byte(&b, 0)
+					countie += 1
+				}
+				write_byte(&b, 0)
+				imgui.Combo("Current entity task", &current_task, to_cstring(&b), countie)
+				current_task_active := strings.clone_to_cstring(
+					fmt.tprintfln("current_task_active: {}", ent.tasks[ent.current_task].active),
+					temp_allocator(),
+				)
+				imgui.Text(current_task_active)
+			}
+
+			task_length := strings.clone_to_cstring(
+				fmt.tprintfln(
+					"Task Block Target Count: {}",
+					len(ent.tasks[ent.current_task].block_targets),
+				),
+				temp_allocator(),
+			)
+			imgui.Text(task_length)
+
+
+			current_target_id := strings.clone_to_cstring(
+				fmt.tprintfln(
+					"current_target_index: {}",
+					ent.tasks[ent.current_task].current_target_index,
+				),
+				temp_allocator(),
+			)
+			imgui.Text(current_target_id)
+			{
+				current_state: i32 = auto_cast ent.state
+				b: Builder
+				countie: i32
+				for kind in ent_state {
+					write_string(&b, fmt.tprint(kind))
+					write_byte(&b, 0)
+					countie += 1
+				}
+				write_byte(&b, 0)
+				imgui.Combo("Current entity state", &current_state, to_cstring(&b), countie)
+			}
+
+			node_path_count := strings.clone_to_cstring(
+				fmt.tprintfln("Node path count: {}", len(ent.node_path)),
+				temp_allocator(),
+			)
+			imgui.Text(node_path_count)
+
 		}
+
+		// TODO, insert the widgets here
+
+
+		End()
 	}
+
 
 	{
 		for &popup_txt in game_data.popup_text {
@@ -802,7 +2107,7 @@ game_play :: proc() {
 			ticks_before_updating_fps = 144
 		}
 		draw_text_center_center(
-			transform_2d({100, 50}),
+			transform_2d({50, 150}),
 			fmt.tprintf("FPS %.0f", fps),
 			20,
 			{1, 1, 1, 1},
@@ -829,13 +2134,16 @@ game_play :: proc() {
 
 
 	{
-		scale: f32 = 16
-		sapp.show_mouse(false)
+		rotation :=
+			cos_breathe_alpha(game_data.world_time_elapsed * 0.75) * 0.1 -
+			sine_breathe_alpha(game_data.world_time_elapsed * 0.75) * 0.1
+		scale: f32 = 32
+		// sapp.show_mouse(false)
 		set_ortho_projection(scale)
 		mouse_world_position = mouse_to_matrix()
 		draw_quad_center_xform(
-			transform_2d(mouse_world_position, auto_cast game_data.world_time_elapsed * 0.1),
-			{14 / scale, 14 / scale},
+			transform_2d(mouse_world_position + {0, -(5 / scale)}, rotation),
+			{22 / scale, 22 / scale},
 			.cursor,
 		)
 	}
@@ -878,7 +2186,7 @@ reset_ui_state :: proc() {
 	}
 	ui_state.hover_id = 0
 
-	if inputs.button_just_pressed[sapp.Mousebutton.LEFT] {
+	if inputs.mouse_just_released[sapp.Mousebutton.LEFT] {
 		ui_state.down_clicked_id = 0
 	}
 }
@@ -978,12 +2286,13 @@ frame :: proc "c" () {
 	start_frame_time := seconds_since_init()
 	actual_dt = start_frame_time - last_frame_time
 	defer last_frame_time = start_frame_time
-	if inputs.button_just_pressed[sapp.Keycode.F11] {
+	if inputs.button_just_released[sapp.Keycode.F11] {
 		sapp.toggle_fullscreen()
 	}
 
 
 	update_sound()
+	imgui_new_frame()
 	switch game_data.app_state {
 	case .splash_logo:
 		set_ui_projection_alignment(.center_center)

@@ -134,3 +134,33 @@ get_scaled_width :: proc() -> f32 {
 
 	return w / game_data.camera_zoom
 }
+
+
+CardinalDirection :: enum {
+	North,
+	East,
+	South,
+	West,
+}
+
+
+cardinal_direction_to_vector :: proc(direction: CardinalDirection) -> Vector2 {
+	switch (direction) {
+	case .North:
+		return {0, 1}
+	case .East:
+		return {1, 0}
+	case .South:
+		return {0, -1}
+	case .West:
+		return {-1, 0}
+	}
+
+	assert(false)
+	return {}
+}
+
+
+is_point_in_viewbox :: proc(viewbox: AABB, point: Vector2) -> bool {
+	return aabb_contains(viewbox.position, viewbox.size, point)
+}

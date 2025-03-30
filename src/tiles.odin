@@ -1,14 +1,153 @@
 package main
 
+import "core:math"
+import "core:math/rand"
+
 
 Tile :: struct {
-	active:              bool,
-	health:              f32,
-	max_health:          f32,
-	grid_position:       Vector2Int,
-	chunk_grid_position: Vector2Int,
-	position:            Vector2,
-	bitmask:             u8,
+	queued_for_destruction: bool,
+	active:                 bool,
+	health:                 f32,
+	max_health:             f32,
+	grid_position:          Vector2Int,
+	chunk_grid_position:    Vector2Int,
+	position:               Vector2,
+	bitmask:                u8,
+}
+
+
+ConveyorDirections :: enum {
+	NORTH,
+	EAST,
+	SOUTH,
+	WEST,
+	NE,
+	EN,
+	SE,
+	ES,
+	NW,
+	WN,
+	SW,
+	WS,
+}
+
+ConveyorType :: enum {
+	SLOW,
+	MID,
+	FAST,
+}
+get_conveyor_speed :: proc(type: ConveyorType) -> f32 {
+	switch (type) {
+	case .SLOW:
+		return 20
+	case .MID:
+		return 40
+	case .FAST:
+		return 60
+	}
+
+	assert(false)
+	return {}
+}
+
+
+get_conveyor_direction :: proc(direction: ConveyorDirections) -> Vector2 {
+	switch (direction) {
+	case .EAST, .NE, .SE:
+		return {1, 0}
+	case .EN, .NORTH, .WN:
+		return {0, 1}
+	case .ES, .SOUTH, .WS:
+		return {0, -1}
+	case .WEST, .SW, .NW:
+		return {-1, 0}
+	}
+
+	assert(false)
+	return {}
+}
+
+ConveyorBelt :: struct {
+	facing_direction: ConveyorDirections,
+	position:         Vector2,
+	chunk_position:   Vector2Int,
+	type:             ConveyorType,
+}
+
+
+get_animation_conveyor_frame :: proc(direction: ConveyorDirections) -> int {
+	base_speed: f32 = 192 // A constant that keeps the animation consistent
+	frame_count := 16
+	speed: f32 = base_speed / f32(frame_count)
+	#partial switch (direction) {
+	case .NW, .NE, .EN, .SE, .ES, .SW, .WN, .WS:
+		frame_count = 4
+
+	}
+
+	frame := int(game_data.world_time_elapsed * speed) % frame_count
+	return frame
+}
+
+import "core:math/linalg"
+
+render_conveyor_belt :: proc(
+	facing_direction: ConveyorDirections,
+	position: Vector2,
+	color: Vector4,
+) {
+	frame := get_animation_conveyor_frame(facing_direction)
+
+	sprite: ImageId = .conveyor_yellow
+	xform := transform_2d(position)
+	#partial switch (facing_direction) {
+	case .NORTH:
+		xform *= rotate_z(math.to_radians_f32(-90))
+	case .EAST:
+		xform *= rotate_z(math.to_radians_f32(180))
+	case .EN:
+		xform *= rotate_z(math.to_radians_f32(90))
+		xform *= linalg.matrix4_scale(Vector3{1.0, -1.0, 1.0})
+		xform *= rotate_z(math.to_radians_f32(-90))
+		sprite = .conveyor_corner
+	case .NE:
+		xform *= rotate_z(math.to_radians_f32(-90))
+		sprite = .conveyor_corner
+	case .NW:
+		sprite = .conveyor_corner
+		xform *= linalg.matrix4_scale(Vector3{-1.0, 1.0, 1.0})
+		xform *= rotate_z(math.to_radians_f32(-90))
+
+	case .WN:
+		sprite = .conveyor_corner
+
+	case .ES:
+		sprite = .conveyor_corner
+		xform *= rotate_z(math.to_radians_f32(-180))
+	case .SOUTH:
+		xform *= rotate_z(math.to_radians_f32(90))
+	case .SE:
+		sprite = .conveyor_corner
+		xform *= rotate_z(math.to_radians_f32(90))
+		xform *= linalg.matrix4_scale(Vector3{1.0, -1.0, 1.0})
+
+	case .SW:
+		sprite = .conveyor_corner
+		xform *= rotate_z(math.to_radians_f32(90))
+	case .WS:
+		sprite = .conveyor_corner
+		xform *= linalg.matrix4_scale(Vector3{1.0, -1.0, 1.0})
+
+	}
+
+
+	draw_quad_center_xform(
+		xform,
+		{16, 16},
+		sprite,
+		get_frame_uvs(sprite, {frame, 0}, {16, 16}),
+		color,
+	)
 }
 
 
@@ -18,9 +157,12 @@ CHUNK_GRID_SIZE_Y: u32 : 20
 CHUNK_ACTUAL_SIZE_X: f32 : f32(CHUNK_GRID_SIZE_X) * TILE_SIZE
 CHUNK_ACTUAL_SIZE_Y: f32 : f32(CHUNK_GRID_SIZE_Y) * TILE_SIZE
 Chunk :: struct {
-	top_left_pos:        Vector2,
 	chunk_grid_position: Vector2Int,
 	tiles:               [CHUNK_GRID_SIZE_X * CHUNK_GRID_SIZE_Y]Tile,
+	initialized:         bool,
+	buildings:           [dynamic]Building,
+	conveyor_belts:      [dynamic]ConveyorBelt,
+	deposits:            [CHUNK_GRID_SIZE_X * CHUNK_GRID_SIZE_Y]Deposit,
 	// index into a tile in the chuck by offset + (y * width + x) e.g tile:= game.tiles[offset + (y * width + x)]
 }
 
@@ -35,6 +177,8 @@ div_floor :: proc(a, b: int) -> int {
 
 
 get_chunk_keys_in_rect :: proc(rect: AABB) -> [dynamic]Vector2Int {
+
+
 	min_chunk_x := div_floor(int(rect.position.x), auto_cast CHUNK_ACTUAL_SIZE_X)
 	min_chunk_y := div_floor(int(rect.position.y), auto_cast CHUNK_ACTUAL_SIZE_Y)
 	max_chunk_x := div_floor(int(rect.position.x + rect.size.x - 1), auto_cast CHUNK_ACTUAL_SIZE_X)
@@ -58,29 +202,117 @@ get_chunk_key :: proc(position: Vector2) -> Vector2Int {
 	}
 }
 
+get_chunk_local_tile_position :: proc(global_position: Vector2) -> Vector2Int {
+	chunk_key := get_chunk_key(global_position) // Get the chunk key (x, y)
 
-create_chunk :: proc(position: Vector2Int) {
-	chunk: Chunk
-	chunk_offset := Vector2 {
-		f32(position.x) * CHUNK_ACTUAL_SIZE_Y,
-		f32(position.y) * CHUNK_ACTUAL_SIZE_Y,
+	// Compute the chunk's world-space origin
+	chunk_origin_x := f32(chunk_key.x) * CHUNK_ACTUAL_SIZE_X
+	chunk_origin_y := f32(chunk_key.y) * CHUNK_ACTUAL_SIZE_Y
+
+	// Find position within the chunk
+	local_x := auto_cast ((global_position.x - chunk_origin_x) / TILE_SIZE)
+	local_y := auto_cast ((global_position.y - chunk_origin_y) / TILE_SIZE)
+
+	// Ensure values are within [0, CHUNK_GRID_SIZE_X - 1] and [0, CHUNK_GRID_SIZE_Y - 1]
+	if local_x < 0 {
+		local_x += auto_cast CHUNK_GRID_SIZE_X
 	}
+	if local_y < 0 {
+		local_y += auto_cast CHUNK_GRID_SIZE_Y
+	}
+
+	return Vector2Int{auto_cast local_x, auto_cast local_y}
+}
+
+
+create_chunk :: proc(chunk_key: Vector2Int) {
+	chunk: Chunk
 	for x: u32 = 0; x < CHUNK_GRID_SIZE_X; x += 1 {
 		for y: u32 = 0; y < CHUNK_GRID_SIZE_Y; y += 1 {
 			tile: Tile
+			tile.health = 5
+			tile.max_health = 5
 			tile.chunk_grid_position = Vector2Int{auto_cast x, auto_cast y}
 			tile.grid_position =
 				Vector2Int{auto_cast x, auto_cast y} +
-				position * Vector2Int{auto_cast CHUNK_GRID_SIZE_X, auto_cast CHUNK_GRID_SIZE_Y}
+				chunk_key * Vector2Int{auto_cast CHUNK_GRID_SIZE_X, auto_cast CHUNK_GRID_SIZE_Y}
 			tile.active = true
 			tile.position =
 				Vector2{auto_cast tile.grid_position.x, auto_cast tile.grid_position.y} * TILE_SIZE
 			chunk.tiles[y * CHUNK_GRID_SIZE_X + x] = tile
+
 		}
 	}
-	chunk.chunk_grid_position = position
-	game_data.chunks[position] = chunk
+	chunk.chunk_grid_position = chunk_key
+	chunk.initialized = true
 
+
+	deposits_per_chunk := rand.int31_max(3) + 1
+	deposit_positions: [dynamic]Vector2Int
+	deposit_radius: [dynamic]i32
+	deposit_radius.allocator = temp_allocator()
+	deposit_positions.allocator = temp_allocator()
+	loop: for i: i32 = 0; i < deposits_per_chunk; i += 1 {
+		radius := rand.int31_max(6) + 2
+		deposit_position: Vector2Int = {
+			auto_cast rand.int31_max(auto_cast CHUNK_GRID_SIZE_X),
+			auto_cast rand.int31_max(auto_cast CHUNK_GRID_SIZE_Y),
+		}
+
+
+		for i := 0; i < len(deposit_positions); i += 1 {
+			pos := deposit_positions[i]
+			size := deposit_radius[i]
+			if manhattan_dist(pos, deposit_position) < auto_cast radius ||
+			   manhattan_dist(pos, deposit_position) < auto_cast size {
+				log("overlap", chunk_key)
+				log(pos, deposit_position, manhattan_dist(pos, deposit_position))
+				continue loop
+			}
+		}
+
+		append(&deposit_positions, deposit_position)
+		append(&deposit_radius, radius)
+		log("Deposit added:", deposit_position, "Radius:", radius)
+	}
+
+
+	for i := 0; i < len(deposit_positions); i += 1 {
+		radius := deposit_radius[i]
+		position := deposit_positions[i]
+		type := generate_random_deposit_type()
+		for y := -radius; y <= radius; y += 1 {
+			for x := -radius; x <= radius; x += 1 {
+				chunk_grid_position: Vector2Int = {
+					auto_cast position.x + auto_cast x,
+					auto_cast position.y + auto_cast y,
+				}
+
+				world_grid_position :=
+					Vector2Int{auto_cast chunk_grid_position.x, auto_cast chunk_grid_position.y} +
+					chunk_key *
+						Vector2Int{auto_cast CHUNK_GRID_SIZE_X, auto_cast CHUNK_GRID_SIZE_Y}
+
+				// Check if within the grid bounds
+				if (chunk_grid_position.x >= 0 &&
+					   chunk_grid_position.x < auto_cast CHUNK_GRID_SIZE_X &&
+					   chunk_grid_position.y >= 0 &&
+					   chunk_grid_position.y < auto_cast CHUNK_GRID_SIZE_Y) {
+					// Check if within the circular radius
+					if (x * x + y * y <= radius * radius) {
+						deposit := create_deposit(world_grid_position, chunk_grid_position, type)
+						chunk.deposits[chunk_grid_position.y * auto_cast CHUNK_GRID_SIZE_X + chunk_grid_position.x] =
+							deposit
+
+					}
+				}
+			}
+		}
+
+
+	}
+
+	game_data.chunks[chunk_key] = chunk
 }
 
 
@@ -124,6 +356,43 @@ neighbour_directions: [8]Vector2Int = {
 	{-1, 1},
 }
 
+
+allocate_tile_neighbour_bitmasks :: proc(
+	chunk_position: Vector2Int,
+	relative_chunk_tile_pos: Vector2Int,
+) {
+
+
+	for dir in neighbour_directions {
+		position := relative_chunk_tile_pos + dir
+		tile := get_tile_in_position(chunk_position, &game_data.chunks, position.x, position.y)
+
+		neighbour_active: [8]bool
+		for i := 0; i < len(neighbour_active); i += 1 {
+			neighbour_active[i] = is_tile_active(
+				chunk_position,
+				position.x + neighbour_directions[i].x,
+				position.y + neighbour_directions[i].y,
+			)
+		}
+
+
+		bitmask := wang_blob_map_number(
+			neighbour_active[0],
+			neighbour_active[1],
+			neighbour_active[2],
+			neighbour_active[3],
+			neighbour_active[4],
+			neighbour_active[5],
+			neighbour_active[6],
+			neighbour_active[7],
+		)
+
+		tile.bitmask = bitmask
+	}
+
+}
+
 allocate_tile_bitmasks :: proc(chunk_position: Vector2Int) {
 	for x: int = 0; x < auto_cast CHUNK_GRID_SIZE_X; x += 1 {
 		for y: int = 0; y < auto_cast CHUNK_GRID_SIZE_Y; y += 1 {
@@ -132,7 +401,6 @@ allocate_tile_bitmasks :: proc(chunk_position: Vector2Int) {
 			for i := 0; i < len(neighbour_active); i += 1 {
 				neighbour_active[i] = is_tile_active(
 					chunk_position,
-					&game_data.chunks,
 					x + neighbour_directions[i].x,
 					y + neighbour_directions[i].y,
 				)
@@ -356,13 +624,47 @@ bitmask_map_value_to_index :: proc(index: u8) -> int {
 	return 0
 }
 
-is_tile_active :: proc(
+
+get_tile_in_position :: proc(
 	current_chunk: Vector2Int,
 	chunks: ^map[Vector2Int]Chunk,
 	x, y: int,
-) -> bool {
+) -> ^Tile {
+
+
 	x, y := x, y
 	chunk_pos := current_chunk
+	if x < 0 {
+		chunk_pos.x -= 1
+		x = auto_cast CHUNK_GRID_SIZE_X - 1
+	}
+	if y < 0 {
+		chunk_pos.y -= 1
+		y = auto_cast CHUNK_GRID_SIZE_Y - 1
+	}
+	if x >= auto_cast CHUNK_GRID_SIZE_X {
+		chunk_pos.x += 1
+		x = 0
+	}
+
+	if y >= auto_cast CHUNK_GRID_SIZE_Y {
+		chunk_pos.y += 1
+		y = 0
+	}
+
+
+	chunk := &chunks[chunk_pos]
+	if !chunk.initialized {
+		assert(false)
+	}
+
+	return &chunk.tiles[y * auto_cast CHUNK_GRID_SIZE_X + x]
+}
+
+is_tile_active :: proc(current_chunk: Vector2Int, x, y: int) -> bool {
+	x, y := x, y
+	chunk_pos := current_chunk
+	chunks: ^map[Vector2Int]Chunk = &game_data.chunks
 	if x < 0 {
 		chunk_pos.x -= 1
 		x = auto_cast CHUNK_GRID_SIZE_X - 1
@@ -390,8 +692,6 @@ get_tile_coords :: proc(index: int) -> Vector2Int {
 	return {x, y}
 }
 
-import "core:math"
-
 
 world_pos_to_tile_pos :: proc(world_pos: Vector2) -> Vector2Int {
 	tile_pos := Vector2Int {
@@ -405,4 +705,80 @@ world_pos_to_tile_pos :: proc(world_pos: Vector2) -> Vector2Int {
 
 tile_pos_to_world_pos :: proc(tile_pos: Vector2Int) -> Vector2 {
 	return {f32(tile_pos.x) * 16.0, f32(tile_pos.y) * 16.0}
+}
+
+
+get_closest_free_block_next_to_target :: proc(
+	world_target_pos: Vector2Int,
+	chunk_target_pos: Vector2Int,
+	chunk_key: Vector2Int,
+	miner_world_pos: Vector2Int,
+) -> (
+	bool,
+	Vector2Int,
+) {
+
+	direction: Vector2Int = {
+		auto_cast math.sign_f32(f32(miner_world_pos.x - world_target_pos.x)),
+		auto_cast math.sign_f32(f32(miner_world_pos.y - world_target_pos.y)),
+	}
+
+
+	position_offsets: [2]Vector2Int = {{direction.x, 0}, {0, direction.y}}
+
+	rand.shuffle(position_offsets[:])
+
+
+	for offset in position_offsets {
+		new_pos := offset + chunk_target_pos // Move to the new position
+		if !is_tile_active(chunk_key, new_pos.x, new_pos.y) {
+			// log(offset, "offset")
+			// log(chunk_target_pos, "chunk_target_pos")
+			// log(new_pos, "new_pos")
+			return true, world_target_pos + offset
+		}
+	}
+
+	// log(direction)
+	// log(positions)
+
+	return false, {}
+
+}
+
+
+damage_block_and_check_destroyed :: proc(
+	miner: ^Entity,
+	block_target: TargetBlock,
+	dmg: f32,
+) -> bool {
+	x := block_target.tile_chunk_grid_position.x
+	y := block_target.tile_chunk_grid_position.y
+	chunk := &game_data.chunks[block_target.chunk_key]
+	tile := &chunk.tiles[y * auto_cast CHUNK_GRID_SIZE_X + x]
+
+
+	if tile.active {
+		tile.health = math.max(0, tile.health - dmg)
+	} else {
+		log("BLOCKED REMOVED")
+		ordered_remove(
+			&miner.tasks[.destroy_blocks].block_targets,
+			miner.tasks[.destroy_blocks].current_target_index,
+		)
+
+		miner.tasks[.destroy_blocks].current_target_index = -1
+		set_state(miner, .idle)
+		return false
+	}
+
+	destroyed := false
+	if tile.health <= 0 {
+		tile.active = false
+		destroyed = true
+		tile.queued_for_destruction = false
+	}
+
+
+	return destroyed
 }

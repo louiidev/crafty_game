@@ -294,6 +294,7 @@ draw_quad_xform_in_frame :: proc(
 
 	quad_array := &draw_frame.quads[draw_frame.active_z_layer]
 	verts: [4]Vertex
+	quad_array.allocator = temp_allocator()
 	defer append(quad_array, verts)
 
 	verts[0].pos = (world_to_clip * v4{0, 0, 0.0, 1.0}).xy
@@ -371,6 +372,7 @@ gfx_render_draw_frame :: proc(frame: ^DrawFrame) {
 	sg.apply_bindings(state.bind)
 
 	sg.draw(0, 6 * total_quad_count, 1)
+	imgui_draw()
 	sg.end_pass()
 }
 
@@ -465,7 +467,7 @@ set_ui_projection_alignment :: proc(alignment: Alignment) {
 	case .center_center:
 		draw_frame.projection = matrix_ortho3d_f32(-w * 0.5, w * 0.5, -h * 0.5, h * 0.5, -1, 1)
 	}
-
+	mouse_world_position = mouse_to_matrix()
 }
 
 
@@ -742,6 +744,7 @@ draw_text_constrainted_center_outlined :: proc(
 	str_arr := strings.split(text, " ", context.temp_allocator)
 
 	temp_str_buffer: [dynamic]string
+	temp_str_buffer.allocator = temp_allocator()
 	for str in str_arr {
 		text_width := measure_text(str, font_size).x
 		if current_width + text_width > box_width {

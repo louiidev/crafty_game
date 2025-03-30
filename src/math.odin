@@ -164,6 +164,11 @@ translate_mat4 :: proc(translation: v3) -> mat4 {
 }
 
 
+rotate_z :: proc(rotation_z: f32) -> mat4 {
+	return linalg.matrix4_rotate(rotation_z, Vector3{0, 0, 1})
+}
+
+
 V2_ZERO :: Vector2{0.0, 0.0}
 V2_ONE :: Vector2{1.0, 1.0}
 transform_2d :: proc(

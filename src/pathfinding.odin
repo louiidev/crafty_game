@@ -21,7 +21,7 @@ f_cost :: proc(node: Node) -> f32 {
 }
 
 
-neighbours: [4]Vector2Int : {{1, 0}, {0, -1}, {0, 1}, {-1, 0}}
+neighbours: [8]Vector2Int : {{1, 0}, {0, -1}, {0, 1}, {-1, 0}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}}
 
 
 gather_nodes :: proc(start: Vector2Int, end: Vector2Int, nodes: ^map[Vector2Int]Node) {
@@ -45,7 +45,6 @@ gather_nodes :: proc(start: Vector2Int, end: Vector2Int, nodes: ^map[Vector2Int]
 		}
 	}
 
-	log("nodes gathered")
 }
 
 
@@ -78,7 +77,6 @@ find_path :: proc(start: Vector2Int, end: Vector2Int) -> [dynamic]Vector2Int {
 		// Find node with lowest f_cost
 		for i := 0; i < len(to_search); i += 1 {
 			pos := to_search[i]
-			log(nodes[pos], nodes[current_pos])
 			if f_cost(nodes[pos]) < f_cost(nodes[current_pos]) ||
 			   f_cost(nodes[pos]) == f_cost(nodes[current_pos]) &&
 				   nodes[pos].h < nodes[current_pos].h {
@@ -109,6 +107,19 @@ find_path :: proc(start: Vector2Int, end: Vector2Int) -> [dynamic]Vector2Int {
 
 			if !(neighbour_position in nodes) || !nodes[neighbour_position].walkable {
 				continue
+			}
+
+			dx := neighbour_position.x - current_pos.x
+			dy := neighbour_position.y - current_pos.y
+
+			if dx != 0 && dy != 0 { 	// Diagonal movement
+				straight1 := Vector2Int{current_pos.x + dx, current_pos.y}
+				straight2 := Vector2Int{current_pos.x, current_pos.y + dy}
+
+				if !(straight1 in nodes && nodes[straight1].walkable) &&
+				   !(straight2 in nodes && nodes[straight2].walkable) {
+					continue // Block diagonal movement if both adjacent tiles are blocked
+				}
 			}
 
 			already_processed := false

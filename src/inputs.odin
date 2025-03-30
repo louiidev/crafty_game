@@ -30,8 +30,9 @@ Inputs :: struct {
 	gamepad_button_down:                                                      [GamePadBtns]bool,
 	gamepad_just_pressed:                                                     [GamePadBtns]bool,
 	button_down:                                                              [sapp.MAX_KEYCODES]bool,
-	button_just_pressed:                                                      [sapp.MAX_KEYCODES]bool,
+	button_just_released:                                                     [sapp.MAX_KEYCODES]bool,
 	mouse_down:                                                               [sapp.MAX_MOUSEBUTTONS]bool,
+	mouse_just_released:                                                      [sapp.MAX_MOUSEBUTTONS]bool,
 	mouse_just_pressed:                                                       [sapp.MAX_MOUSEBUTTONS]bool,
 	mouse_pos, prev_mouse_pos, mouse_delta, mouse_down_pos, mouse_down_delta: Vector2,
 	screen_mouse_pos, screen_mouse_down_pos, screen_mouse_down_delta:         Vector2,
@@ -47,6 +48,7 @@ event_cb :: proc "c" (event: ^sapp.Event) {
 	inputs.screen_mouse_pos.y = auto_cast (sapp.height() - auto_cast event.mouse_y)
 	result := windows.XInputGetState(.One, &inputs.xinput_state)
 
+	sokol_to_imgui(event)
 
 	using sapp.Event_Type
 	#partial switch event.type {
@@ -55,10 +57,13 @@ event_cb :: proc "c" (event: ^sapp.Event) {
 		if (event.type == .MOUSE_DOWN) {
 			inputs.mouse_down_pos = inputs.mouse_pos
 			inputs.screen_mouse_down_pos = inputs.screen_mouse_pos
+			inputs.mouse_just_pressed[event.mouse_button] = !inputs.mouse_down[event.mouse_button]
+			log(inputs.mouse_just_pressed[event.mouse_button], event.mouse_button)
 			inputs.mouse_down[event.mouse_button] = true
+
 		} else if (event.type == .MOUSE_UP) {
 			inputs.mouse_down[event.mouse_button] = false
-			inputs.mouse_just_pressed[event.mouse_button] = true
+			inputs.mouse_just_released[event.mouse_button] = true
 		} else if (event.type == .MOUSE_SCROLL) {
 			inputs.mouse_scroll_delta = {event.scroll_x, event.scroll_y}
 		}
@@ -69,7 +74,7 @@ event_cb :: proc "c" (event: ^sapp.Event) {
 
 	case .KEY_UP:
 		inputs.button_down[event.key_code] = false
-		inputs.button_just_pressed[event.key_code] = true
+		inputs.button_just_released[event.key_code] = true
 	}
 	using inputs
 	using windows.XINPUT_GAMEPAD_BUTTON_BIT
@@ -237,15 +242,19 @@ event_cb :: proc "c" (event: ^sapp.Event) {
 
 inputs_end_frame :: proc() {
 	inputs.mouse_scroll_delta = {}
-	for i := 0; i < len(inputs.button_just_pressed); i += 1 {
-		inputs.button_just_pressed[i] = false
+	for i := 0; i < len(inputs.button_just_released); i += 1 {
+		inputs.button_just_released[i] = false
 	}
 
 	for &btn in inputs.gamepad_just_pressed {
 		btn = false
 	}
 
-	for i := 0; i < len(inputs.mouse_just_pressed); i += 1 {
+	for i := 0; i < len(inputs.mouse_just_released); i += 1 {
+		inputs.mouse_just_released[i] = false
+	}
+
+	for i := 0; i < len(inputs.mouse_just_released); i += 1 {
 		inputs.mouse_just_pressed[i] = false
 	}
 }

@@ -51,8 +51,8 @@ calculate_collision_point_circle_overlap :: proc(
 
 
 AABB :: struct {
-	position: Vector2, // Top-left corner
-	size:     Vector2, // Width and Height
+	using position: Vector2, // Top-left corner
+	size:           Vector2, // Width and Height
 }
 
 make_aabb_from_positions :: proc(start, end: Vector2) -> AABB {

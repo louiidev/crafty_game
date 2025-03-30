@@ -79,6 +79,7 @@ BUTTON_COLOR: Vector4 : {0.5, 0.5, 0.5, 1}
 BUTTON_HOVER_COLOR: Vector4 : {0.3, 0.3, 0.3, 1}
 BUTTON_BORDER_COLOR: Vector4 : {1, 1, 1, 1}
 BUTTON_DISABLED_COLOR: Vector4 : {0.1, 0.1, 0.1, 1.0}
+BUTTON_SELECTED_COLOR: Vector4 : {0.1, 0.6, 1.0, 1}
 bordered_button :: proc(
 	position: Vector2,
 	size: Vector2,
@@ -86,17 +87,17 @@ bordered_button :: proc(
 	font_size: f32,
 	id: UiID,
 	disabled: bool = false,
+	selected: bool = false,
 ) -> bool {
 	xform := transform_2d(position)
-
-
 	color := BUTTON_COLOR
-	if !disabled && aabb_contains(position, size, mouse_world_position) {
+	if !disabled && aabb_center_contains(position, size, mouse_world_position) {
 		ui_state.hover_id = id
 		color = BUTTON_HOVER_COLOR
 	}
-	if !disabled && inputs.mouse_down[sapp.Mousebutton.LEFT] && ui_state.hover_id == id {
+	if !disabled && inputs.mouse_just_pressed[sapp.Mousebutton.LEFT] && ui_state.hover_id == id {
 		ui_state.down_clicked_id = id
+		ui_state.click_captured = true
 	}
 
 
@@ -104,12 +105,16 @@ bordered_button :: proc(
 		color = BUTTON_DISABLED_COLOR
 	}
 
+	if selected {
+		color = BUTTON_SELECTED_COLOR
+	}
+
 	pressed := false
 
 	if !disabled &&
 	   ui_state.hover_id == id &&
 	   !ui_state.click_captured &&
-	   inputs.mouse_just_pressed[sapp.Mousebutton.LEFT] &&
+	   inputs.mouse_just_released[sapp.Mousebutton.LEFT] &&
 	   ui_state.down_clicked_id == id {
 		pressed = true
 		ui_state.click_captured = true
@@ -172,7 +177,7 @@ text_button :: proc(
 	if !disabled &&
 	   ui_state.hover_id == id &&
 	   !ui_state.click_captured &&
-	   inputs.mouse_just_pressed[sapp.Mousebutton.LEFT] &&
+	   inputs.mouse_just_released[sapp.Mousebutton.LEFT] &&
 	   ui_state.down_clicked_id == id {
 		pressed = true
 		ui_state.click_captured = true
@@ -234,7 +239,7 @@ image_button :: proc(
 	if !disabled &&
 	   ui_state.hover_id == id &&
 	   !ui_state.click_captured &&
-	   inputs.mouse_just_pressed[sapp.Mousebutton.LEFT] &&
+	   inputs.mouse_just_released[sapp.Mousebutton.LEFT] &&
 	   ui_state.down_clicked_id == id {
 		pressed = true
 		ui_state.click_captured = true

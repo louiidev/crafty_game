@@ -18,3 +18,4 @@ sokol-tools/
 fips/
 game/
 *.exe
+build/
