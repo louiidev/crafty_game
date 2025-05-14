@@ -372,7 +372,7 @@ gfx_render_draw_frame :: proc(frame: ^DrawFrame) {
 	sg.apply_bindings(state.bind)
 
 	sg.draw(0, 6 * total_quad_count, 1)
-	imgui_draw()
+	// imgui_draw()
 	sg.end_pass()
 }
 
@@ -698,6 +698,7 @@ draw_text_constrainted_center :: proc(
 	str_arr := strings.split(text, " ", context.temp_allocator)
 
 	temp_str_buffer: [dynamic]string
+	temp_str_buffer.allocator = temp_allocator()
 	for str in str_arr {
 		width := measure_text(str, font_size).x
 		if current_width + width > box_width {

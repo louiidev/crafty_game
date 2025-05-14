@@ -11,6 +11,16 @@ TargetBlock :: struct {
 }
 
 
+MinerTask :: enum {
+	nil,
+	return_item,
+	heading_to_rest,
+	build_building,
+	destroy_blocks,
+	destroy_building,
+}
+
+
 TaskQueueItem :: struct {
 	active:               bool,
 	block_targets:        [dynamic]TargetBlock,
@@ -18,22 +28,37 @@ TaskQueueItem :: struct {
 }
 
 
-remove_blocks_for_destruction :: proc(miner: ^Entity, deletion_tile_pos: ^[dynamic]TargetBlock) {
-	task := &miner.tasks[.destroy_blocks]
+remove_buildings :: proc(miner: ^Entity, deletion_tile_pos: ^[dynamic]TargetBlock) {
+	remove_destruction_blocks_for_task(miner, deletion_tile_pos, .destroy_building)
+}
+
+
+remove_destruction_blocks_for_task :: proc(
+	miner: ^Entity,
+	deletion_tile_pos: ^[dynamic]TargetBlock,
+	task_type: MinerTask,
+) {
+	task := &miner.tasks[task_type]
 
 
 	if len(task.block_targets) > 0 {
 
-
 		previous_task_index := task.current_target_index
-		previous_task_pos := task.block_targets[previous_task_index].tile_world_grid_position
+
+
+		previous_task_pos: Vector2Int
+
+		if previous_task_index > -1 {
+			previous_task_pos = task.block_targets[previous_task_index].tile_world_grid_position
+		}
 
 		for remove_block in deletion_tile_pos {
 			for backwards_i := (len(task.block_targets) - 1); backwards_i >= 0; backwards_i -= 1 {
 				if task.block_targets[backwards_i].tile_world_grid_position ==
 				   remove_block.tile_world_grid_position {
 					ordered_remove(&task.block_targets, backwards_i)
-					if task.current_target_index == backwards_i {
+					if task.current_target_index == backwards_i ||
+					   len(task.block_targets) >= task.current_target_index {
 						task.current_target_index = -1
 					}
 				}
@@ -43,14 +68,14 @@ remove_blocks_for_destruction :: proc(miner: ^Entity, deletion_tile_pos: ^[dynam
 
 
 		if len(task.block_targets) == 0 {
-			if .destroy_blocks == miner.current_task {
+			if task_type == miner.current_task {
 				clear(&miner.node_path)
 			}
 
 			task.active = false
 			miner.current_task = .nil
 			set_state(miner, .idle)
-		} else if previous_task_index > -1 {
+		} else if previous_task_index > -1 && miner.current_task == task_type {
 			for backwards_i := (len(task.block_targets) - 1); backwards_i >= 0; backwards_i -= 1 {
 				target := task.block_targets[backwards_i]
 				if target.tile_world_grid_position == previous_task_pos {
@@ -62,43 +87,68 @@ remove_blocks_for_destruction :: proc(miner: ^Entity, deletion_tile_pos: ^[dynam
 	}
 }
 
+remove_blocks_for_destruction :: proc(miner: ^Entity, deletion_tile_pos: ^[dynamic]TargetBlock) {
+	remove_destruction_blocks_for_task(miner, deletion_tile_pos, .destroy_blocks)
+}
 
-add_blocks_for_destruction :: proc(miner: ^Entity, deletion_tile_pos: ^[dynamic]TargetBlock) {
-	has_task := miner.tasks[.destroy_blocks].active
+
+add_blocks_for_destruction :: proc(
+	miner: ^Entity,
+	deletion_tile_pos: ^[dynamic]TargetBlock,
+	type: MinerTask,
+) {
+	has_task := miner.tasks[type].active
 
 	if !has_task {
-		add_new_task(.destroy_blocks, miner)
+		add_new_task(type, miner)
 	}
 
-	append_elems(&miner.tasks[.destroy_blocks].block_targets, ..deletion_tile_pos[:])
+	append_elems(&miner.tasks[type].block_targets, ..deletion_tile_pos[:])
 }
 
 
 update_miner_cancel_destroy_block_task :: proc(position: Vector2, size: Vector2) {
 	view_box: AABB = get_frame_view()
-	target_blocks: [dynamic]TargetBlock
-	target_blocks.allocator = temp_allocator()
+	dirt_target_blocks: [dynamic]TargetBlock
+	dirt_target_blocks.allocator = temp_allocator()
+	building_target_blocks: [dynamic]TargetBlock
+	building_target_blocks.allocator = temp_allocator()
 	chunk_keys := get_chunk_keys_in_rect(view_box)
 	for chunk_key in chunk_keys {
 		chunk := &game_data.chunks[chunk_key]
 		for &tile in chunk.tiles {
-			if tile.active && aabb_contains(position, size, tile.position) {
-				append(
-					&target_blocks,
-					TargetBlock {
-						tile_world_grid_position = tile.grid_position,
-						tile_chunk_grid_position = tile.chunk_grid_position,
-						chunk_key = chunk_key,
-					},
-				)
+			if aabb_contains(position, size, tile.position) {
 				tile.queued_for_destruction = false
+				if tile.occupied_by == .Dirt {
+					append(
+						&dirt_target_blocks,
+						TargetBlock {
+							tile_world_grid_position = tile.grid_position,
+							tile_chunk_grid_position = tile.chunk_grid_position,
+							chunk_key = chunk_key,
+						},
+					)
+				} else if tile.occupied_by == .Building {
+					tile.queued_for_destruction = false
+					append(
+						&building_target_blocks,
+						TargetBlock {
+							tile_world_grid_position = tile.grid_position,
+							tile_chunk_grid_position = tile.chunk_grid_position,
+							chunk_key = chunk_key,
+						},
+					)
+				}
 			}
 		}
+
+
 	}
 
 
 	for &miner in game_data.miners {
-		remove_blocks_for_destruction(&miner, &target_blocks)
+		remove_buildings(&miner, &building_target_blocks)
+		remove_blocks_for_destruction(&miner, &dirt_target_blocks)
 	}
 
 
@@ -112,20 +162,35 @@ update_miner_destroy_block_task :: proc(position: Vector2, size: Vector2) {
 	view_box: AABB = get_frame_view()
 	target_blocks: [dynamic]TargetBlock
 	target_blocks.allocator = temp_allocator()
+	building_target_blocks: [dynamic]TargetBlock
+	building_target_blocks.allocator = temp_allocator()
 	chunk_keys := get_chunk_keys_in_rect(view_box)
 	for chunk_key in chunk_keys {
 		chunk := &game_data.chunks[chunk_key]
 		for &tile in chunk.tiles {
-			if tile.active && aabb_contains(position, size, tile.position) {
-				append(
-					&target_blocks,
-					TargetBlock {
-						tile_world_grid_position = tile.grid_position,
-						tile_chunk_grid_position = tile.chunk_grid_position,
-						chunk_key = chunk_key,
-					},
-				)
-				tile.queued_for_destruction = true
+			if aabb_contains(position, size, tile.position) {
+				if tile.occupied_by == .Dirt {
+					append(
+						&target_blocks,
+						TargetBlock {
+							tile_world_grid_position = tile.grid_position,
+							tile_chunk_grid_position = tile.chunk_grid_position,
+							chunk_key = chunk_key,
+						},
+					)
+					tile.queued_for_destruction = true
+				} else if tile.occupied_by == .Building {
+					append(
+						&building_target_blocks,
+						TargetBlock {
+							tile_world_grid_position = tile.grid_position,
+							tile_chunk_grid_position = tile.chunk_grid_position,
+							chunk_key = chunk_key,
+						},
+					)
+					tile.queued_for_destruction = true
+				}
+
 			}
 		}
 	}
@@ -135,12 +200,15 @@ update_miner_destroy_block_task :: proc(position: Vector2, size: Vector2) {
 		if len(game_data.selected_miner_ids) > 0 {
 			for selected_id in game_data.selected_miner_ids {
 				if selected_id == miner.id {
-					add_blocks_for_destruction(&miner, &target_blocks)
+
+					add_blocks_for_destruction(&miner, &target_blocks, .destroy_blocks)
+					add_blocks_for_destruction(&miner, &building_target_blocks, .destroy_building)
 					break
 				}
 			}
 		} else {
-			add_blocks_for_destruction(&miner, &target_blocks)
+			add_blocks_for_destruction(&miner, &target_blocks, .destroy_blocks)
+			add_blocks_for_destruction(&miner, &building_target_blocks, .destroy_building)
 		}
 
 
@@ -176,13 +244,14 @@ generate_path_for_building :: proc(miner: ^Entity) {
 		miner_tile_world_pos,
 	)
 
-	if ok {
+	if ok && world_pos_to_tile_pos(miner.position) != position {
 		path := find_path(world_pos_to_tile_pos(miner.position), position)
 		target_block.miner_placement_world_position = position
 		if path != nil {
 			miner.node_path = slice.clone_to_dynamic(path[:])
 		} else {
 			log("CANT FIND PATH")
+			log(world_pos_to_tile_pos(miner.position), position)
 			assert(false)
 		}
 		delete(path)
@@ -203,7 +272,6 @@ building_finished :: proc(task_world_pos: Vector2Int, distance: f32) {
 				miner.tasks[.build_building].current_target_index,
 			)
 			if miner.current_task == .build_building {
-				log("REMOVED CURRENT TASK")
 				remove_current_task(&miner)
 			}
 		}

@@ -25,7 +25,6 @@ GamePadBtns :: enum {
 	RightTrigger,
 }
 
-
 Inputs :: struct {
 	gamepad_button_down:                                                      [GamePadBtns]bool,
 	gamepad_just_pressed:                                                     [GamePadBtns]bool,
@@ -40,6 +39,22 @@ Inputs :: struct {
 	xinput_state:                                                             windows.XINPUT_STATE,
 }
 
+consume_key_just_released :: proc(code: sapp.Keycode) {
+	inputs.button_just_released[code] = false
+}
+
+// consume_key_just_pressed :: proc(code: sapp.Keycode) {
+// 	inputs.input_state.keys[code] -= {.just_pressed}
+// }
+
+consume_mouse_just_released :: proc(mouse_btn: sapp.Mousebutton) {
+	inputs.button_just_released[mouse_btn] = false
+}
+
+consume_mouse_just_pressed :: proc(mouse_btn: sapp.Mousebutton) {
+	inputs.mouse_just_pressed[mouse_btn] = false
+}
+
 
 inputs: Inputs
 event_cb :: proc "c" (event: ^sapp.Event) {
@@ -48,7 +63,7 @@ event_cb :: proc "c" (event: ^sapp.Event) {
 	inputs.screen_mouse_pos.y = auto_cast (sapp.height() - auto_cast event.mouse_y)
 	result := windows.XInputGetState(.One, &inputs.xinput_state)
 
-	sokol_to_imgui(event)
+	// sokol_to_imgui(event)
 
 	using sapp.Event_Type
 	#partial switch event.type {
@@ -58,9 +73,7 @@ event_cb :: proc "c" (event: ^sapp.Event) {
 			inputs.mouse_down_pos = inputs.mouse_pos
 			inputs.screen_mouse_down_pos = inputs.screen_mouse_pos
 			inputs.mouse_just_pressed[event.mouse_button] = !inputs.mouse_down[event.mouse_button]
-			log(inputs.mouse_just_pressed[event.mouse_button], event.mouse_button)
 			inputs.mouse_down[event.mouse_button] = true
-
 		} else if (event.type == .MOUSE_UP) {
 			inputs.mouse_down[event.mouse_button] = false
 			inputs.mouse_just_released[event.mouse_button] = true

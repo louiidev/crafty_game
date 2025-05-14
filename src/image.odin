@@ -185,6 +185,7 @@ pack_images_into_atlas :: proc() {
 	stbrp.init_target(&cont, auto_cast atlas.w, auto_cast atlas.h, &nodes[0], auto_cast atlas.w)
 
 	rects: [dynamic]stbrp.Rect
+	defer delete(rects)
 	for img, id in images {
 		if img.width == 0 {
 			continue

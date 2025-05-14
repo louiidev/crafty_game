@@ -97,7 +97,7 @@ bordered_button :: proc(
 	}
 	if !disabled && inputs.mouse_just_pressed[sapp.Mousebutton.LEFT] && ui_state.hover_id == id {
 		ui_state.down_clicked_id = id
-		ui_state.click_captured = true
+		consume_mouse_just_pressed(.LEFT)
 	}
 
 
@@ -113,11 +113,10 @@ bordered_button :: proc(
 
 	if !disabled &&
 	   ui_state.hover_id == id &&
-	   !ui_state.click_captured &&
 	   inputs.mouse_just_released[sapp.Mousebutton.LEFT] &&
 	   ui_state.down_clicked_id == id {
 		pressed = true
-		ui_state.click_captured = true
+		consume_mouse_just_released(.LEFT)
 	}
 
 
@@ -176,11 +175,10 @@ text_button :: proc(
 
 	if !disabled &&
 	   ui_state.hover_id == id &&
-	   !ui_state.click_captured &&
 	   inputs.mouse_just_released[sapp.Mousebutton.LEFT] &&
 	   ui_state.down_clicked_id == id {
 		pressed = true
-		ui_state.click_captured = true
+		consume_mouse_just_released(.LEFT)
 	}
 
 	{
@@ -238,11 +236,10 @@ image_button :: proc(
 
 	if !disabled &&
 	   ui_state.hover_id == id &&
-	   !ui_state.click_captured &&
 	   inputs.mouse_just_released[sapp.Mousebutton.LEFT] &&
 	   ui_state.down_clicked_id == id {
 		pressed = true
-		ui_state.click_captured = true
+		consume_mouse_just_pressed(.LEFT)
 	}
 
 

@@ -4,9 +4,16 @@ import "core:math"
 import "core:math/rand"
 
 
+TileOccupiedBy :: enum {
+	nil,
+	Dirt,
+	Building,
+	Resource,
+}
+
 Tile :: struct {
 	queued_for_destruction: bool,
-	active:                 bool,
+	occupied_by:            TileOccupiedBy,
 	health:                 f32,
 	max_health:             f32,
 	grid_position:          Vector2Int,
@@ -68,10 +75,12 @@ get_conveyor_direction :: proc(direction: ConveyorDirections) -> Vector2 {
 }
 
 ConveyorBelt :: struct {
-	facing_direction: ConveyorDirections,
-	position:         Vector2,
-	chunk_position:   Vector2Int,
-	type:             ConveyorType,
+	initial_direction:   ConveyorDirections,
+	visual_direction:    ConveyorDirections,
+	position:            Vector2,
+	world_tile_position: Vector2Int,
+	chunk_position:      Vector2Int,
+	type:                ConveyorType,
 }
 
 
@@ -95,8 +104,9 @@ render_conveyor_belt :: proc(
 	facing_direction: ConveyorDirections,
 	position: Vector2,
 	color: Vector4,
+	animate := true,
 ) {
-	frame := get_animation_conveyor_frame(facing_direction)
+	frame := animate ? get_animation_conveyor_frame(facing_direction) : 0
 
 	sprite: ImageId = .conveyor_yellow
 	xform := transform_2d(position)
@@ -236,7 +246,7 @@ create_chunk :: proc(chunk_key: Vector2Int) {
 			tile.grid_position =
 				Vector2Int{auto_cast x, auto_cast y} +
 				chunk_key * Vector2Int{auto_cast CHUNK_GRID_SIZE_X, auto_cast CHUNK_GRID_SIZE_Y}
-			tile.active = true
+			tile.occupied_by = .Dirt
 			tile.position =
 				Vector2{auto_cast tile.grid_position.x, auto_cast tile.grid_position.y} * TILE_SIZE
 			chunk.tiles[y * CHUNK_GRID_SIZE_X + x] = tile
@@ -682,7 +692,31 @@ is_tile_active :: proc(current_chunk: Vector2Int, x, y: int) -> bool {
 		chunk_pos.y += 1
 		y = 0
 	}
-	return chunks[chunk_pos].tiles[y * auto_cast CHUNK_GRID_SIZE_X + x].active
+	return chunks[chunk_pos].tiles[y * auto_cast CHUNK_GRID_SIZE_X + x].occupied_by == .Dirt
+}
+
+is_tile_occupied :: proc(current_chunk: Vector2Int, x, y: int) -> bool {
+	x, y := x, y
+	chunk_pos := current_chunk
+	chunks: ^map[Vector2Int]Chunk = &game_data.chunks
+	if x < 0 {
+		chunk_pos.x -= 1
+		x = auto_cast CHUNK_GRID_SIZE_X - 1
+	}
+	if y < 0 {
+		chunk_pos.y -= 1
+		y = auto_cast CHUNK_GRID_SIZE_Y - 1
+	}
+	if x >= auto_cast CHUNK_GRID_SIZE_X {
+		chunk_pos.x += 1
+		x = 0
+	}
+
+	if y >= auto_cast CHUNK_GRID_SIZE_Y {
+		chunk_pos.y += 1
+		y = 0
+	}
+	return chunks[chunk_pos].tiles[y * auto_cast CHUNK_GRID_SIZE_X + x].occupied_by != .nil
 }
 
 
@@ -757,28 +791,55 @@ damage_block_and_check_destroyed :: proc(
 	chunk := &game_data.chunks[block_target.chunk_key]
 	tile := &chunk.tiles[y * auto_cast CHUNK_GRID_SIZE_X + x]
 
-
-	if tile.active {
+	if tile.occupied_by == .Dirt {
 		tile.health = math.max(0, tile.health - dmg)
 	} else {
-		log("BLOCKED REMOVED")
-		ordered_remove(
-			&miner.tasks[.destroy_blocks].block_targets,
-			miner.tasks[.destroy_blocks].current_target_index,
-		)
-
-		miner.tasks[.destroy_blocks].current_target_index = -1
-		set_state(miner, .idle)
-		return false
+		return true
 	}
 
 	destroyed := false
 	if tile.health <= 0 {
-		tile.active = false
+		tile.occupied_by = .nil
 		destroyed = true
 		tile.queued_for_destruction = false
 	}
 
 
 	return destroyed
+}
+
+damage_building_and_check_destroyed :: proc(
+	miner: ^Entity,
+	block_target: TargetBlock,
+	dmg: f32,
+) -> bool {
+	x := block_target.tile_chunk_grid_position.x
+	y := block_target.tile_chunk_grid_position.y
+	chunk := &game_data.chunks[block_target.chunk_key]
+	tile := &chunk.tiles[y * auto_cast CHUNK_GRID_SIZE_X + x]
+	b_pointer: ^Building
+	found_building := false
+	for &building in chunk.buildings {
+		if building.world_position == block_target.tile_world_grid_position {
+			found_building = true
+			b_pointer = &building
+		}
+	}
+
+	if found_building {
+		b_pointer.built = false
+		b_pointer.build_progress -= math.max(0, b_pointer.build_progress - dmg)
+
+		if b_pointer.build_progress <= 0 {
+			tile.occupied_by = .nil
+			b_pointer.active = false
+			tile.queued_for_destruction = false
+			return true
+		}
+	} else {
+		log("CANT FIND BUILDING")
+	}
+
+
+	return false
 }

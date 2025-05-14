@@ -37,7 +37,7 @@ gather_nodes :: proc(start: Vector2Int, end: Vector2Int, nodes: ^map[Vector2Int]
 		chunk := game_data.chunks[key]
 		for tile in chunk.tiles {
 			node: Node
-			node.walkable = !tile.active
+			node.walkable = tile.occupied_by != .Dirt
 			node.position = tile.grid_position
 			node.g = 100000000
 			nodes[tile.grid_position] = node

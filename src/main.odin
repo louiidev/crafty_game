@@ -72,7 +72,7 @@ STAMINA_REST_TIMER :: 0.3
 
 PlayerActionType :: enum {
 	nil,
-	Dig,
+	Destroy,
 	Cancel,
 }
 
@@ -147,15 +147,6 @@ ent_state :: enum {
 	mining,
 	collecting,
 	sleeping,
-}
-
-
-MinerTask :: enum {
-	nil,
-	return_item,
-	heading_to_rest,
-	build_building,
-	destroy_blocks,
 }
 
 
@@ -331,7 +322,7 @@ init :: proc "c" () {
 	init_sound()
 	setup_run()
 	init_time = time.now()
-	imgui_init()
+	// imgui_init()
 
 	when (!DEBUG || !TESTING) && !DEV {
 		game_data.app_state = .splash_logo
@@ -436,7 +427,7 @@ init :: proc "c" () {
 	}
 
 
-	game_data.money = 100
+	game_data.money = 100000
 	// data: [len(game_data.tiles)]byte
 
 
@@ -449,6 +440,7 @@ init :: proc "c" () {
 
 	{
 		collection_box: Building
+		collection_box.working = true
 		collection_box.active = true
 		collection_box.build_progress = 100
 		collection_box.chunk_key = {0, 0}
@@ -456,7 +448,7 @@ init :: proc "c" () {
 		collection_box.position = {10, 10} * {16, 16}
 		collection_box.size = {16, 16}
 		collection_box.type = .CollectionBox
-
+		new_chunk.tiles[10 * CHUNK_GRID_SIZE_X + 10].occupied_by = .Building
 		collection_box.sprite_coords = {0, 0}
 		append(&new_chunk.buildings, collection_box)
 	}
@@ -484,7 +476,7 @@ init :: proc "c" () {
 				active = false
 			}
 
-			new_chunk.tiles[y * CHUNK_GRID_SIZE_X + x].active = active
+			new_chunk.tiles[y * CHUNK_GRID_SIZE_X + x].occupied_by = active ? .Dirt : .nil
 
 		}
 	}
@@ -597,7 +589,8 @@ game_play :: proc() {
 
 	particle_dt: f32 = get_delta_time()
 
-	if inputs.button_just_released[sapp.Keycode.ESCAPE] {
+	if inputs.button_just_released[sapp.Keycode.ESCAPE] && game_data.ui_state != .build_menu {
+		consume_key_just_released(.ESCAPE)
 		if game_data.ui_state == .pause_menu || game_data.ui_state == .upgrade_menu {
 			game_data.ui_state = nil
 		} else if game_data.ui_state == nil {
@@ -617,10 +610,7 @@ game_play :: proc() {
 
 
 	if !game_play_paused {
-
-
 		max_distance: f32 = 25
-
 		if game_data.ui_state == nil {
 			game_data.shake_amount = math.max(game_data.shake_amount - CAMERA_SHAKE_DECAY * dt, 0)
 			amount := math.pow(game_data.shake_amount, SHAKE_POWER)
@@ -685,13 +675,13 @@ game_play :: proc() {
 		if bordered_button(
 			{130, 50},
 			{150, 50},
-			"Dig",
+			"Destroy",
 			28,
 			2,
 			game_data.ui_state == .upgrade_menu || game_data.ui_state == .pause_menu,
-			game_data.action_type == .Dig,
+			game_data.action_type == .Destroy,
 		) {
-			game_data.action_type = game_data.action_type == .Dig ? .nil : .Dig
+			game_data.action_type = game_data.action_type == .Destroy ? .nil : .Destroy
 		}
 
 		if bordered_button(
@@ -699,7 +689,7 @@ game_play :: proc() {
 			{150, 50},
 			"Cancel",
 			28,
-			2,
+			3,
 			game_data.ui_state == .upgrade_menu || game_data.ui_state == .pause_menu,
 			game_data.action_type == .Cancel,
 		) {
@@ -713,10 +703,12 @@ game_play :: proc() {
 			{150, 50},
 			"UPGRADES",
 			28,
-			2,
+			4,
 			game_data.ui_state == .upgrade_menu || game_data.ui_state == .pause_menu,
 		) {
 			game_data.ui_state = .upgrade_menu
+			game_data.action_type = .nil
+
 		}
 
 		if bordered_button(
@@ -724,11 +716,13 @@ game_play :: proc() {
 			{150, 50},
 			"BUILD",
 			28,
-			2,
-			game_data.ui_state == .build_menu || game_data.ui_state == .pause_menu,
+			5,
+			game_data.ui_state == .pause_menu,
+			game_data.ui_state == .build_menu,
 		) {
-			game_data.ui_state = .build_menu
+			game_data.ui_state = game_data.ui_state == .build_menu ? .nil : .build_menu
 			game_data.ux_state.ux_x_offset = -450
+			game_data.action_type = .nil
 		}
 
 
@@ -769,7 +763,6 @@ game_play :: proc() {
 
 
 				if bordered_button({0, -300}, {200, 70}, "X", 32, 3, false) {
-					log("FIRES")
 					game_data.ui_state = .nil
 				}
 
@@ -864,12 +857,11 @@ game_play :: proc() {
 					)
 				}
 				if inputs.button_just_released[sapp.Keycode.ESCAPE] {
-					if inputs.button_just_released[sapp.Keycode.ESCAPE] {
-						if game_data.current_selected_build_type != .nil {
-							game_data.current_selected_build_type = .nil
-						} else {
-							game_data.ux_anim_state = .fade_out
-						}
+					consume_key_just_released(.ESCAPE)
+					if game_data.current_selected_build_type != .nil {
+						game_data.current_selected_build_type = .nil
+					} else {
+						game_data.ux_anim_state = .fade_out
 					}
 				}
 
@@ -905,12 +897,6 @@ game_play :: proc() {
 	mouse_world_position = mouse_to_matrix()
 
 	{
-		// // @dropbox
-		// set_z_layer(.background)
-		// xform := transform_2d(tile_pos_to_world_pos(game_data.dropbox.tile_world_grid_position))
-		// draw_quad_center_xform(xform, {24, 24}, .storage_box, DEFAULT_UV, COLOR_WHITE)
-	}
-	{
 		//@placing building
 
 		if game_data.current_selected_build_type != .nil {
@@ -918,28 +904,14 @@ game_play :: proc() {
 			tile_position := world_pos_to_tile_pos(mouse_world_position)
 			position := tile_pos_to_world_pos(tile_position)
 			chunk_key := get_chunk_key(position)
-			cant_place :=
-				is_tile_active(chunk_key, tile_position.x, tile_position.y) ||
-				is_tile_active(chunk_key, tile_position.x + 1, tile_position.y) ||
-				is_tile_active(chunk_key, tile_position.x, tile_position.y + 1) ||
-				is_tile_active(chunk_key, tile_position.x + 1, tile_position.y + 1)
+			cant_place := is_tile_occupied(chunk_key, tile_position.x, tile_position.y)
+			log(cant_place, chunk_key, tile_position.x, tile_position.y)
 			chunk := &game_data.chunks[chunk_key]
-
-			aabb: AABB = {
-				size     = item.size * 0.8,
-				position = position,
-			}
-			for b in chunk.buildings {
-				if is_aabb_overlapping(AABB{size = b.size, position = b.position}, aabb) {
-					cant_place = true
-					break
-				}
-			}
 
 
 			if inputs.button_just_released[sapp.Keycode.R] {
 				belt_direction_len := len(ConveyorDirections)
-				if int(item.belt_direction) >= belt_direction_len {
+				if int(item.belt_direction) >= 3 {
 					item.belt_direction = auto_cast 0
 				} else {
 					item.belt_direction = auto_cast (int(item.belt_direction) + 1)
@@ -955,6 +927,20 @@ game_play :: proc() {
 				)
 			} else {
 				sprite := get_build_item_sprite(game_data.current_selected_build_type)
+
+				if item.type == .Furnace || item.type == .Drill {
+					draw_quad_center_xform(
+						transform_2d(
+							position + get_conveyor_direction(item.belt_direction) * 16,
+							math.to_radians(f32(item.belt_direction) * -90),
+						),
+						{16, 16},
+						.arrow,
+						DEFAULT_UV,
+						cant_place ? {1, 0.3, 0.3, 0.5} : {1, 1, 1, 0.3},
+					)
+				}
+
 				draw_quad_center_xform(
 					transform_2d(position),
 					{16, 16},
@@ -964,15 +950,14 @@ game_play :: proc() {
 				)
 			}
 
-			if !cant_place &&
-			   !ui_state.click_captured &&
-			   inputs.mouse_just_pressed[sapp.Mousebutton.LEFT] {
-				ui_state.click_captured = true
+			if !cant_place && inputs.mouse_just_pressed[sapp.Mousebutton.LEFT] {
+				consume_mouse_just_pressed(.LEFT)
 
 
 				b: Building
 				b.active = true
 				b.working = true
+				b.last_world_item_output_index = -1
 				b.build_progress = 0
 				b.chunk_key = chunk_key
 				b.position = position
@@ -982,9 +967,10 @@ game_play :: proc() {
 				b.world_position = tile_position
 				b.sprite_coords = item.sprite_coords
 				b.chunk_tile_position = get_chunk_local_tile_position(b.position)
-				b.output_direction = .East
+				b.output_direction = auto_cast item.belt_direction
 				building_index := len(chunk.buildings)
-
+				chunk.tiles[b.chunk_tile_position.y * auto_cast CHUNK_GRID_SIZE_X + b.chunk_tile_position.x].occupied_by =
+				.Building
 				append(&chunk.buildings, b)
 
 				game_data.money -= item.cost
@@ -1019,8 +1005,7 @@ game_play :: proc() {
 
 
 	// @gameplay inputs 
-	if !game_play_paused && !ui_state.click_captured {
-
+	if !game_play_paused {
 
 		if inputs.mouse_scroll_delta != {} {
 			game_data.camera_zoom = math.clamp(
@@ -1032,34 +1017,35 @@ game_play :: proc() {
 
 
 		using sapp
-		buttons: [1]Mousebutton = {sapp.Mousebutton.LEFT}
 
-		just_released_btn := sapp.Mousebutton.INVALID
+		just_released_btn := false
 		size: Vector2
-		for button in buttons {
-			if inputs.mouse_just_pressed[button] && !game_data.selecting {
-				game_data.start_selecting = true
-				break
-			} else if inputs.mouse_down[button] &&
-			   !game_data.selecting &&
-			   game_data.start_selecting {
-				game_data.selecting = true
-				game_data.start_drag = mouse_world_position
-				game_data.start_selecting = false
-				break
-			} else if inputs.mouse_just_released[button] {
-				size = {
-					mouse_world_position.x - game_data.start_drag.x,
-					mouse_world_position.y - game_data.start_drag.y,
-				}
 
-				just_released_btn = button
-				break
+		if inputs.mouse_just_pressed[sapp.Mousebutton.LEFT] && !game_data.selecting {
+			consume_mouse_just_pressed(.LEFT)
+			game_data.start_selecting = true
+
+		} else if inputs.mouse_down[sapp.Mousebutton.LEFT] &&
+		   !game_data.selecting &&
+		   game_data.start_selecting {
+			consume_mouse_just_pressed(.LEFT)
+			game_data.selecting = true
+			game_data.start_drag = mouse_world_position
+			game_data.start_selecting = false
+
+		} else if inputs.mouse_just_released[sapp.Mousebutton.LEFT] {
+			consume_mouse_just_released(.LEFT)
+			size = {
+				mouse_world_position.x - game_data.start_drag.x,
+				mouse_world_position.y - game_data.start_drag.y,
 			}
+
+			just_released_btn = true
+
 		}
 
 
-		if just_released_btn == Mousebutton.LEFT &&
+		if just_released_btn &&
 		   len(game_data.selected_miner_ids) > 0 &&
 		   linalg.length(size) <= 10 &&
 		   game_data.start_selecting {
@@ -1084,7 +1070,7 @@ game_play :: proc() {
 			clear(&game_data.selected_miner_ids)
 		}
 
-		if just_released_btn == .LEFT {
+		if just_released_btn {
 			if game_data.action_type == .nil && game_data.selecting {
 				clear(&game_data.selected_miner_ids)
 				for miner in game_data.miners {
@@ -1094,7 +1080,7 @@ game_play :: proc() {
 				}
 			}
 
-			if game_data.action_type == .Dig && game_data.selecting {
+			if game_data.action_type == .Destroy && game_data.selecting {
 				update_miner_destroy_block_task(game_data.start_drag, size)
 			}
 
@@ -1102,7 +1088,7 @@ game_play :: proc() {
 				update_miner_cancel_destroy_block_task(game_data.start_drag, size)
 			}
 
-			if just_released_btn != Mousebutton.INVALID && game_data.selecting {
+			if just_released_btn && game_data.selecting {
 				game_data.selecting = false
 			}
 		}
@@ -1122,6 +1108,7 @@ game_play :: proc() {
 
 
 		if inputs.mouse_just_released[sapp.Mousebutton.LEFT] {
+			consume_mouse_just_released(.LEFT)
 			game_data.start_selecting = false
 		}
 
@@ -1143,6 +1130,8 @@ game_play :: proc() {
 		{-1, 0},
 		{-1, 1},
 	}
+
+	four_neighbour_directions: [4]Vector2Int = {{1, 0}, {0, -1}, {0, 1}, {-1, 0}}
 
 	view := get_frame_view()
 	view.position -= TILE_SIZE * 2
@@ -1166,7 +1155,7 @@ game_play :: proc() {
 				)
 			}
 
-			if !tile.active {
+			if tile.occupied_by != .Dirt {
 				color := hex_to_rgb(0x6b4337)
 				if (tile.grid_position.x + tile.grid_position.y) % 2 == 0 {
 					color = hex_to_rgb(0x684236)
@@ -1220,7 +1209,7 @@ game_play :: proc() {
 		// @transport belt
 		for conveyor_belt in chunk.conveyor_belts {
 			render_conveyor_belt(
-				conveyor_belt.facing_direction,
+				conveyor_belt.visual_direction,
 				conveyor_belt.position,
 				COLOR_WHITE,
 			)
@@ -1244,6 +1233,23 @@ game_play :: proc() {
 							building.working = false
 						}
 					}
+
+					if building.last_world_item_output_index != -1 {
+						item := game_data.world_items[building.last_world_item_output_index]
+						if item.active &&
+						   manhattan_dist(
+							   world_pos_to_tile_pos(item.position),
+							   building.world_position,
+						   ) <=
+							   1 {
+							building.working = false
+						} else {
+							building.working = true
+							building.last_world_item_output_index = -1
+						}
+					}
+
+
 					if building.working &&
 					   building.current_animation_time >= DRILL_ANIMATION_TIME {
 						building.current_animation_time = 0
@@ -1264,8 +1270,9 @@ game_play :: proc() {
 							mined_resource.mined_resource_type = resource_type
 							mined_resource.position =
 								building.position +
-								cardinal_direction_to_vector(building.output_direction) * 16
+								cardinal_direction_to_vector(building.output_direction) * 10
 							append(&game_data.world_items, mined_resource)
+							building.last_world_item_output_index = len(game_data.world_items) - 1
 						}
 					}
 				case .Furnace:
@@ -1306,14 +1313,41 @@ game_play :: proc() {
 			}
 
 			if !building.invisible {
-				sprite := get_build_item_sprite(building.type)
-				draw_quad_center_xform(
-					transform_2d(building.position),
-					{16, 16},
-					sprite,
-					get_frame_uvs(sprite, {building.current_animation_frame, 0}, {16, 16}),
-					building.build_progress < 100 ? {0.3, 0.3, 1.0, 0.5} : COLOR_WHITE,
-				)
+				if building.type == .ConveyorBelt {
+					render_conveyor_belt(
+						building.belt_direction,
+						building.position,
+						building.build_progress < 100 ? {0.3, 0.3, 1.0, 0.5} : COLOR_WHITE,
+						false,
+					)
+				} else {
+					sprite := get_build_item_sprite(building.type)
+					draw_quad_center_xform(
+						transform_2d(building.position),
+						{16, 16},
+						sprite,
+						get_frame_uvs(sprite, {building.current_animation_frame, 0}, {16, 16}),
+						building.build_progress < 100 ? {0.3, 0.3, 1.0, 0.5} : COLOR_WHITE,
+					)
+					if !building.working {
+						draw_quad_center_xform(
+							transform_2d(building.position + {7, 7}),
+							{8, 8},
+							.circle,
+							get_frame_uvs(.circle, {0, 0}, {64, 64}),
+							COLOR_WHITE,
+						)
+						draw_quad_center_xform(
+							transform_2d(building.position + {7, 7}),
+							{6, 6},
+							.circle,
+							get_frame_uvs(.circle, {0, 0}, {64, 64}),
+							COLOR_RED,
+						)
+					}
+
+				}
+
 
 			}
 
@@ -1343,8 +1377,12 @@ game_play :: proc() {
 
 		viewbox := get_frame_view()
 		for &world_item in game_data.world_items {
-
-
+			tile_pos := world_pos_to_tile_pos(world_item.position)
+			draw_rect_center_xform(
+				transform_2d(tile_pos_to_world_pos(tile_pos)),
+				{16, 16},
+				{1, 0, 0, 0.3},
+			)
 			if is_point_in_viewbox(viewbox, world_item.position) {
 
 				switch (world_item.type) {
@@ -1374,18 +1412,35 @@ game_play :: proc() {
 			}
 
 			chunk_key := get_chunk_key(world_item.position)
-			chunk_pos := get_chunk_local_tile_position(world_item.position)
+
+
 			for belt in game_data.chunks[chunk_key].conveyor_belts {
-				if belt.chunk_position == chunk_pos {
+				if belt.world_tile_position == tile_pos {
+					conveyor_direction := get_conveyor_direction(belt.initial_direction)
+					direction: Vector2 = conveyor_direction * get_conveyor_speed(belt.type)
 
-					direction: Vector2 =
-						get_conveyor_direction(belt.facing_direction) *
-						get_conveyor_speed(belt.type)
+					tile_pos := world_pos_to_tile_pos(world_item.position)
+					blocked := false
+					for other_world_item in game_data.world_items {
+						other_tile_pos := world_pos_to_tile_pos(other_world_item.position)
+						if manhattan_dist(tile_pos, other_tile_pos) == 1 {
+							if tile_pos + {int(conveyor_direction.x), int(conveyor_direction.y)} ==
+							   other_tile_pos {
+								blocked = true
+								break
+							}
+						}
+					}
+					if !blocked {
+						world_item.position += direction * dt
+					}
 
-					world_item.position += direction * dt
-					continue
+
+					break
 				}
 			}
+
+
 		}
 	}
 
@@ -1399,10 +1454,11 @@ game_play :: proc() {
 				// find next best task if one
 				for task in MinerTask {
 					if task == .build_building {
-						if miner.tasks[task].active &&
-						   len(miner.tasks[task].block_targets) > 0 &&
+
+						if len(miner.tasks[task].block_targets) > 0 &&
 						   miner.tasks[task].current_target_index > -1 {
 							miner.current_task = task
+							miner.tasks[task].active = true
 							if len(miner.node_path) == 0 {
 								generate_path_for_building(&miner)
 							}
@@ -1508,10 +1564,146 @@ game_play :: proc() {
 										belt: ConveyorBelt
 										belt.position = building.position
 										belt.type = .SLOW
-										belt.facing_direction = building.belt_direction
+										belt.initial_direction = building.belt_direction
 										belt.chunk_position = building.chunk_tile_position
-										append(&chunk.conveyor_belts, belt)
+										belt.world_tile_position = building.world_position
+										direction := get_conveyor_direction(belt.initial_direction)
 
+
+										has_neighbour := false
+										neighbour_conveyor_direction: ConveyorDirections
+										belt_pointer: ^ConveyorBelt
+										for neighbour_direction in four_neighbour_directions {
+
+											position :=
+												neighbour_direction + building.world_position
+											for &belt in chunk.conveyor_belts {
+												belt_pos := world_pos_to_tile_pos(belt.position)
+												if belt_pos == position {
+													// check conflict e.g west cant be transfer into east
+													if -direction !=
+													   get_conveyor_direction(
+														   belt.initial_direction,
+													   ) {
+														has_neighbour = true
+														neighbour_conveyor_direction =
+															belt.initial_direction
+														belt_pointer = &belt
+														break
+													}
+
+												}
+											}
+										}
+
+										belt.visual_direction = building.belt_direction
+										if has_neighbour &&
+										   neighbour_conveyor_direction != belt.initial_direction {
+											// create corner join
+
+											// belt.visual_direction = building.belt_direction
+
+
+											if belt.initial_direction == .EAST &&
+											   belt_pointer.initial_direction == .SOUTH {
+												if belt.position.x == belt_pointer.position.x {
+													belt.visual_direction = .SE
+												} else if belt.position.x >
+													   belt_pointer.position.x &&
+												   belt.initial_direction ==
+													   belt.visual_direction {
+
+													belt_pointer.visual_direction = .SE
+												}
+											}
+
+											if belt.initial_direction == .EAST &&
+											   belt_pointer.initial_direction == .NORTH {
+												if belt.position.x == belt_pointer.position.x {
+													belt.visual_direction = .NE
+												} else if belt.position.x >
+													   belt_pointer.position.x &&
+												   belt.initial_direction ==
+													   belt.visual_direction {
+													belt_pointer.visual_direction = .NE
+												}
+											}
+
+											if belt.initial_direction == .WEST &&
+											   belt_pointer.initial_direction == .SOUTH {
+												if belt.position.x == belt_pointer.position.x {
+													belt.visual_direction = .SW
+												} else if belt.position.x <
+													   belt_pointer.position.x &&
+												   belt.initial_direction ==
+													   belt.visual_direction {
+													belt_pointer.visual_direction = .SW
+												}
+											}
+
+											if belt.initial_direction == .WEST &&
+											   belt_pointer.initial_direction == .NORTH {
+												if belt.position.x == belt_pointer.position.x {
+													belt.visual_direction = .NW
+												} else if belt.position.x <
+													   belt_pointer.position.x &&
+												   belt.initial_direction ==
+													   belt.visual_direction {
+													belt_pointer.visual_direction = .NW
+												}
+											}
+
+
+											if belt.initial_direction == .NORTH &&
+											   belt_pointer.initial_direction == .EAST {
+												if belt.position.x == belt_pointer.position.x &&
+												   belt.initial_direction ==
+													   belt.visual_direction {
+													belt_pointer.visual_direction = .EN
+												} else if belt.position.x >
+												   belt_pointer.position.x {
+													belt.visual_direction = .EN
+												}
+											}
+
+											if belt.initial_direction == .NORTH &&
+											   belt_pointer.initial_direction == .WEST {
+												if belt.position.x == belt_pointer.position.x &&
+												   belt.initial_direction ==
+													   belt.visual_direction {
+													belt_pointer.visual_direction = .WN
+												} else if belt.position.x <
+												   belt_pointer.position.x {
+													belt.visual_direction = .WN
+												}
+											}
+
+											if belt.initial_direction == .SOUTH &&
+											   belt_pointer.initial_direction == .EAST {
+												if belt.position.x == belt_pointer.position.x &&
+												   belt.initial_direction ==
+													   belt.visual_direction {
+													belt_pointer.visual_direction = .ES
+												} else if belt.position.x >
+												   belt_pointer.position.x {
+													belt.visual_direction = .ES
+												}
+											}
+
+											if belt.initial_direction == .SOUTH &&
+											   belt_pointer.initial_direction == .WEST {
+												if belt.position.x == belt_pointer.position.x &&
+												   belt.initial_direction ==
+													   belt.visual_direction {
+													belt_pointer.visual_direction = .WS
+												} else if belt.position.x <
+												   belt_pointer.position.x {
+													belt.visual_direction = .WS
+												}
+											}
+										}
+
+										append(&chunk.conveyor_belts, belt)
 										building.invisible = true
 									}
 								}
@@ -1548,6 +1740,89 @@ game_play :: proc() {
 
 					}
 				}
+			case .destroy_building:
+				{
+					task := &miner.tasks[.destroy_blocks]
+					block_targets := &task.block_targets
+
+					if task.current_target_index == -1 && len(block_targets) > 0 {
+						// find a block to destroy
+						closest_dist: f32 = math.inf_f32(1)
+						closest_block: Vector2Int = {}
+						miner_block_pos := world_pos_to_tile_pos(miner.position)
+
+						for i := 0; i < len(block_targets); i += 1 {
+							block := block_targets[i]
+							dist := manhattan_dist(block.tile_world_grid_position, miner_block_pos)
+							if dist < closest_dist {
+								ok, pos := get_closest_free_block_next_to_target(
+									block.tile_world_grid_position,
+									block.tile_chunk_grid_position,
+									block.chunk_key,
+									miner_block_pos,
+								)
+								if ok {
+									task.block_targets[i].miner_placement_world_position = pos
+									task.current_target_index = i
+									closest_dist = dist
+									closest_block = block.tile_world_grid_position
+								}
+							}
+						}
+						if task.current_target_index == -1 {
+							remove_current_task(&miner)
+						}
+						// assert(task.current_target_index > -1)
+						clear(&miner.node_path)
+					}
+
+
+					if len(block_targets) > 0 &&
+					   len(miner.node_path) == 0 &&
+					   manhattan_dist(
+						   task.block_targets[task.current_target_index].miner_placement_world_position,
+						   world_pos_to_tile_pos(miner.position),
+					   ) >
+						   0 {
+						path := find_path(
+							world_pos_to_tile_pos(miner.position),
+							task.block_targets[task.current_target_index].miner_placement_world_position,
+						)
+						if path != nil {
+							miner.node_path = slice.clone_to_dynamic(path[:])
+						} else {
+							log("no path")
+						}
+						delete(path)
+					}
+
+
+					if len(block_targets) > 0 &&
+					   manhattan_dist(
+						   task.block_targets[task.current_target_index].miner_placement_world_position,
+						   world_pos_to_tile_pos(miner.position),
+					   ) ==
+						   0 {
+						if miner.state != .mining {
+							miner.task_timer = MINE_BLOCK_TIMER
+						}
+
+						set_state(&miner, .mining)
+
+						block_target := task.block_targets[task.current_target_index]
+						target_pos := tile_pos_to_world_pos(block_target.tile_world_grid_position)
+
+						dir: Vector2Int =
+							block_target.tile_world_grid_position -
+							world_pos_to_tile_pos(miner.position)
+						miner.last_face_direction = dir
+					}
+
+					if task.current_target_index == -1 && len(task.block_targets) == 0 {
+						remove_current_task(&miner)
+						set_state(&miner, .idle)
+					}
+				}
 			case .destroy_blocks:
 				{
 					task := &miner.tasks[.destroy_blocks]
@@ -1578,8 +1853,7 @@ game_play :: proc() {
 							}
 						}
 						if task.current_target_index == -1 {
-							log(miner.id)
-							assert(false)
+							remove_current_task(&miner)
 						}
 						// assert(task.current_target_index > -1)
 						clear(&miner.node_path)
@@ -1768,34 +2042,30 @@ game_play :: proc() {
 					}
 				}
 
-				task := miner.tasks[.destroy_blocks]
+
+				task := miner.tasks[miner.current_task]
 				if task_timer <= 0.0 && task.current_target_index != -1 {
 					task_timer = MINE_BLOCK_TIMER
 					block_target_to_remove := task.block_targets[task.current_target_index]
-					if damage_block_and_check_destroyed(&miner, block_target_to_remove, 1.0) {
+					if miner.current_task == .destroy_blocks &&
+						   damage_block_and_check_destroyed(&miner, block_target_to_remove, 1.0) ||
+					   miner.current_task == .destroy_building &&
+						   damage_building_and_check_destroyed(
+							   &miner,
+							   block_target_to_remove,
+							   1.0,
+						   ) {
 
 						// @TODO @PERFORMANCE
 						// maybe check nearby miners instead?
 						for &m in game_data.miners {
-							m_task := &m.tasks[.destroy_blocks]
+							m_task := &m.tasks[current_task]
 							index := -1
 							blocks: for i := 0; i < len(m_task.block_targets); i += 1 {
 								if block_target_to_remove.tile_world_grid_position ==
-								   m_task.block_targets[m_task.current_target_index].tile_world_grid_position {
-
-									if index > -1 {
-										log("MULTIPLE TO REMOVE???")
-									}
-
+								   m_task.block_targets[i].tile_world_grid_position {
 									index = i
-									log(
-										"BLOCK REMOVED FROM M",
-										block_target_to_remove.tile_world_grid_position,
-										i,
-									)
-									break blocks
-
-
+									break
 								}
 							}
 
@@ -1805,73 +2075,19 @@ game_play :: proc() {
 									set_state(&m, .idle)
 								}
 								m_task.current_target_index = -1
-							} else {
-								log("DIDNT FIND BLOCK TO REMOVE", block_target_to_remove)
-								log("M BLOCKS", m.tasks[.destroy_blocks].block_targets)
 							}
 						}
 
-
-						allocate_tile_neighbour_bitmasks(
-							block_target_to_remove.chunk_key,
-							block_target_to_remove.tile_chunk_grid_position,
-						)
-
-
-						result := rand.float32_range(0, 30)
-						block_dropped_item := false
-						miner.mined_resource = .nil
-						// if result > 28 {
-						// 	// diamond
-						// 	block_dropped_item = true
-						// 	miner.mined_resource = .diamond
-						// 	append(&chunk.deposits)
-
-						// } else if result > 25 {
-						// 	block_dropped_item = true
-						// 	miner.mined_resource = .gold_ore
-						// } else if result > 20 {
-						// 	block_dropped_item = true
-						// 	miner.mined_resource = .silver_ore
-						// }
-
-
-						if block_dropped_item {
-							miner_tile_world_pos := world_pos_to_tile_pos(miner.position)
-							dropoff_zone_world_til_pos :=
-								game_data.dropbox.tile_world_grid_position
-
-
-							ok, position := get_closest_free_block_next_to_target(
-								game_data.dropbox.tile_world_grid_position,
-								game_data.dropbox.tile_chunk_grid_position,
-								game_data.dropbox.chunk_key,
-								miner_tile_world_pos,
+						if miner.current_task == .destroy_blocks {
+							allocate_tile_neighbour_bitmasks(
+								block_target_to_remove.chunk_key,
+								block_target_to_remove.tile_chunk_grid_position,
 							)
-							// if ok {
-							// 	path := find_path(world_pos_to_tile_pos(miner.position), position)
-							// 	if path != nil {
-							// 		miner.node_path = slice.clone_to_dynamic(path[:])
-							// 		add_new_task(.return_item, &miner)
-
-
-							// 		target: TargetBlock
-							// 		target.tile_world_grid_position = position
-							// 		target.chunk_key = game_data.dropbox.chunk_key
-							// 		target.
-							// 		target.tile_chunk_grid_position = append(
-							// 			&miner.tasks[.return_item].block_targets,
-							// 			target,
-							// 		)
-
-							// 	} else {
-							// 		log("CANT FIND PATH")
-							// 	}
-							// 	delete(path)
-							// }
-
 						}
+
+
 					}
+
 				}
 
 			}
@@ -1975,80 +2191,80 @@ game_play :: proc() {
 	{
 		using imgui
 		using strings
-		imgui.SetNextItemWidth(200.0)
-		imgui.SetNextWindowSize({600, 800}, imgui.Cond.FirstUseEver)
+		// imgui.SetNextItemWidth(200.0)
+		// imgui.SetNextWindowSize({600, 800}, imgui.Cond.FirstUseEver)
 
-		Begin("Debug Menu")
+		// Begin("Debug Menu")
 
-		for &ent in game_data.miners {
+		// for &ent in game_data.miners {
 
-			ent_id := strings.clone_to_cstring(
-				fmt.tprintfln("Ent ID: {}", ent.id),
-				temp_allocator(),
-			)
-			imgui.Text(ent_id)
-			imgui.SliderFloat("Speed", &ent.speed, 0, 200)
-			{
-				current_task: i32 = auto_cast ent.current_task
-				b: Builder
-				countie: i32
-				for kind in MinerTask {
-					write_string(&b, fmt.tprint(kind))
-					write_byte(&b, 0)
-					countie += 1
-				}
-				write_byte(&b, 0)
-				imgui.Combo("Current entity task", &current_task, to_cstring(&b), countie)
-				current_task_active := strings.clone_to_cstring(
-					fmt.tprintfln("current_task_active: {}", ent.tasks[ent.current_task].active),
-					temp_allocator(),
-				)
-				imgui.Text(current_task_active)
-			}
+		// 	ent_id := strings.clone_to_cstring(
+		// 		fmt.tprintfln("Ent ID: {}", ent.id),
+		// 		temp_allocator(),
+		// 	)
+		// 	imgui.Text(ent_id)
+		// 	imgui.SliderFloat("Speed", &ent.speed, 0, 200)
+		// 	{
+		// 		current_task: i32 = auto_cast ent.current_task
+		// 		b: Builder
+		// 		countie: i32
+		// 		for kind in MinerTask {
+		// 			write_string(&b, fmt.tprint(kind))
+		// 			write_byte(&b, 0)
+		// 			countie += 1
+		// 		}
+		// 		write_byte(&b, 0)
+		// 		imgui.Combo("Current entity task", &current_task, to_cstring(&b), countie)
+		// 		current_task_active := strings.clone_to_cstring(
+		// 			fmt.tprintfln("current_task_active: {}", ent.tasks[ent.current_task].active),
+		// 			temp_allocator(),
+		// 		)
+		// 		imgui.Text(current_task_active)
+		// 	}
 
-			task_length := strings.clone_to_cstring(
-				fmt.tprintfln(
-					"Task Block Target Count: {}",
-					len(ent.tasks[ent.current_task].block_targets),
-				),
-				temp_allocator(),
-			)
-			imgui.Text(task_length)
-
-
-			current_target_id := strings.clone_to_cstring(
-				fmt.tprintfln(
-					"current_target_index: {}",
-					ent.tasks[ent.current_task].current_target_index,
-				),
-				temp_allocator(),
-			)
-			imgui.Text(current_target_id)
-			{
-				current_state: i32 = auto_cast ent.state
-				b: Builder
-				countie: i32
-				for kind in ent_state {
-					write_string(&b, fmt.tprint(kind))
-					write_byte(&b, 0)
-					countie += 1
-				}
-				write_byte(&b, 0)
-				imgui.Combo("Current entity state", &current_state, to_cstring(&b), countie)
-			}
-
-			node_path_count := strings.clone_to_cstring(
-				fmt.tprintfln("Node path count: {}", len(ent.node_path)),
-				temp_allocator(),
-			)
-			imgui.Text(node_path_count)
-
-		}
-
-		// TODO, insert the widgets here
+		// 	task_length := strings.clone_to_cstring(
+		// 		fmt.tprintfln(
+		// 			"Task Block Target Count: {}",
+		// 			len(ent.tasks[ent.current_task].block_targets),
+		// 		),
+		// 		temp_allocator(),
+		// 	)
+		// 	imgui.Text(task_length)
 
 
-		End()
+		// 	current_target_id := strings.clone_to_cstring(
+		// 		fmt.tprintfln(
+		// 			"current_target_index: {}",
+		// 			ent.tasks[ent.current_task].current_target_index,
+		// 		),
+		// 		temp_allocator(),
+		// 	)
+		// 	imgui.Text(current_target_id)
+		// 	{
+		// 		current_state: i32 = auto_cast ent.state
+		// 		b: Builder
+		// 		countie: i32
+		// 		for kind in ent_state {
+		// 			write_string(&b, fmt.tprint(kind))
+		// 			write_byte(&b, 0)
+		// 			countie += 1
+		// 		}
+		// 		write_byte(&b, 0)
+		// 		imgui.Combo("Current entity state", &current_state, to_cstring(&b), countie)
+		// 	}
+
+		// 	node_path_count := strings.clone_to_cstring(
+		// 		fmt.tprintfln("Node path count: {}", len(ent.node_path)),
+		// 		temp_allocator(),
+		// 	)
+		// 	imgui.Text(node_path_count)
+
+		// }
+
+		// // TODO, insert the widgets here
+
+
+		// End()
 	}
 
 
@@ -2175,12 +2391,10 @@ HOVER_TIME: f32 = 0.3
 UiState :: struct {
 	hover_id:        UiID,
 	hover_time:      f32,
-	click_captured:  bool,
 	down_clicked_id: u32,
 }
 
 reset_ui_state :: proc() {
-	ui_state.click_captured = false
 	if ui_state.hover_id == 0 {
 		ui_state.hover_time = 0
 	}
@@ -2292,7 +2506,7 @@ frame :: proc "c" () {
 
 
 	update_sound()
-	imgui_new_frame()
+	// imgui_new_frame()
 	switch game_data.app_state {
 	case .splash_logo:
 		set_ui_projection_alignment(.center_center)
